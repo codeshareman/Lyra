@@ -109,10 +109,17 @@ Provider notes:
 
 Lyra searches upward from current directory for these config files:
 
-- `.content-generatorrc.json`
-- `.content-generatorrc.js`
-- `content-generator.config.json`
-- `content-generator.config.js`
+- `.lyrarc`
+- `.lyrarc.json`
+- `.lyrarc.yaml`
+- `.lyrarc.yml`
+- `.lyrarc.js`
+- `.lyrarc.cjs`
+- `.lyrarc.mjs`
+- `lyra.config.json`
+- `lyra.config.js`
+- `lyra.config.cjs`
+- `lyra.config.mjs`
 
 ## Minimal Config Example
 

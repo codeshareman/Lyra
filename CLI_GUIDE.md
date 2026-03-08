@@ -203,10 +203,17 @@ lyra schedule --help
 
 ### 自定义配置文件位置
 CLI会自动查找以下配置文件（按优先级）：
-- `.content-generatorrc.json`
-- `.content-generatorrc.js`
-- `content-generator.config.json`
-- `content-generator.config.js`
+- `.lyrarc`
+- `.lyrarc.json`
+- `.lyrarc.yaml`
+- `.lyrarc.yml`
+- `.lyrarc.js`
+- `.lyrarc.cjs`
+- `.lyrarc.mjs`
+- `lyra.config.json`
+- `lyra.config.js`
+- `lyra.config.cjs`
+- `lyra.config.mjs`
 
 ### 环境变量支持
 可以通过环境变量覆盖配置：

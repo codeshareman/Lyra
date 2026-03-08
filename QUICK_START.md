@@ -2,7 +2,7 @@
 
 ## 第一步：创建配置文件
 
-在你的项目根目录创建 `.content-generatorrc.json`：
+在你的项目根目录创建 `.lyrarc.json`：
 
 ```json
 {

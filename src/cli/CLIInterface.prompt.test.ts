@@ -231,7 +231,7 @@ title: 刻意练习复盘
   });
 
   it('lyra article 在未提供 --out 时应写入默认模块目录', async () => {
-    const configPath = path.join(tempDir, '.content-generatorrc.json');
+    const configPath = path.join(tempDir, '.lyrarc.json');
     const outputBaseDir = path.join(tempDir, 'Output', 'Z° North');
 
     await fs.writeFile(
@@ -303,7 +303,7 @@ title: 刻意练习复盘
   });
 
   it('lyra article --dry-run 应只预览不写文件', async () => {
-    const configPath = path.join(tempDir, '.content-generatorrc.json');
+    const configPath = path.join(tempDir, '.lyrarc.json');
     const outputBaseDir = path.join(tempDir, 'Output', 'Z° North');
 
     await fs.writeFile(
@@ -418,5 +418,42 @@ title: 刻意练习复盘
     const length = (cli as any).estimateReadableLength(revised.content);
     expect(length).toBeGreaterThanOrEqual(900);
     expect(requestSpy).toHaveBeenCalled();
+  });
+
+  it('应从混合文本中提取 JSON 文章载荷', () => {
+    const raw = [
+      '# "title": "下班口的十五分钟：我如何用晚霞收回一天的注意力",',
+      '{',
+      '  "title": "下班口的十五分钟：我如何用晚霞收回一天的注意力",',
+      '  "content": "第一段。\\n\\n第二段。",',
+      '  "imagePromptNanobanaPro": "sunset street documentary photo"',
+      '}',
+    ].join('\n');
+
+    const parsed = (cli as any).parseGeneratedArticlePayload(raw);
+
+    expect(parsed).toBeTruthy();
+    expect(parsed.title).toContain('下班口的十五分钟');
+    expect(parsed.content).toContain('第一段');
+  });
+
+  it('article 输出应包含 frontmatter 与阅读提示', () => {
+    const markdown = (cli as any).formatGeneratedArticleMarkdown(
+      {
+        title: '春节重刷《甄嬛传》：她们身不由己，我们主动选择',
+        content: '# 春节重刷《甄嬛传》：她们身不由己，我们主动选择\n\n正文第一段。\n\n正文第二段。',
+        imagePromptNanobanaPro: 'portrait, dramatic light',
+      },
+      {
+        moduleName: '生活志',
+      }
+    );
+
+    expect(markdown).toContain('---');
+    expect(markdown).toContain('note_type: output_note');
+    expect(markdown).toContain('category: "Z°N 生活志"');
+    expect(markdown).toContain('✨ 温馨提示：本文约');
+    expect(markdown).toContain('正文第一段。');
+    expect(markdown).not.toContain('## Nanobana Pro 生图提示词');
   });
 });

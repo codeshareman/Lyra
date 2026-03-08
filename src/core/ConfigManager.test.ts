@@ -25,7 +25,7 @@ describe('ConfigManager', () => {
 
   describe('load', () => {
     it('should load configuration from a specific file path', async () => {
-      const configPath = path.join(tempDir, '.content-generatorrc.json');
+      const configPath = path.join(tempDir, '.lyrarc.json');
       const testConfig = {
         global: {
           logLevel: 'debug',
@@ -78,7 +78,7 @@ describe('ConfigManager', () => {
     });
 
     it('should merge user configuration with defaults', async () => {
-      const configPath = path.join(tempDir, '.content-generatorrc.json');
+      const configPath = path.join(tempDir, '.lyrarc.json');
       const partialConfig = {
         global: {
           logLevel: 'error',
@@ -108,7 +108,7 @@ describe('ConfigManager', () => {
     });
 
     it('should throw error for invalid configuration', async () => {
-      const configPath = path.join(tempDir, '.content-generatorrc.json');
+      const configPath = path.join(tempDir, '.lyrarc.json');
       const invalidConfig = {
         global: {
           logLevel: 'invalid-level',
@@ -122,7 +122,7 @@ describe('ConfigManager', () => {
     });
 
     it('should support multiple data sources for a template', async () => {
-      const configPath = path.join(tempDir, '.content-generatorrc.json');
+      const configPath = path.join(tempDir, '.lyrarc.json');
       const testConfig = {
         global: {
           logLevel: 'info',
@@ -443,7 +443,7 @@ describe('ConfigManager', () => {
 
   describe('configuration merging', () => {
     it('should deep merge nested content configuration', async () => {
-      const configPath = path.join(tempDir, '.content-generatorrc.json');
+      const configPath = path.join(tempDir, '.lyrarc.json');
       const partialConfig = {
         global: {
           logLevel: 'info',
@@ -478,7 +478,7 @@ describe('ConfigManager', () => {
     });
 
     it('should preserve hooks from user config', async () => {
-      const configPath = path.join(tempDir, '.content-generatorrc.json');
+      const configPath = path.join(tempDir, '.lyrarc.json');
       const testConfig = {
         global: {
           logLevel: 'info',

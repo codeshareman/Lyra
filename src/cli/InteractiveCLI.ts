@@ -327,7 +327,7 @@ export class InteractiveCLI {
     }
 
     // 写入配置文件
-    const configFilePath = '.content-generatorrc.json';
+    const configFilePath = '.lyrarc.json';
     await fs.writeFile(configFilePath, JSON.stringify(config, null, 2), 'utf-8');
 
     prompts.note(`配置文件已创建: ${configFilePath}`, '✅ 初始化完成');
@@ -338,10 +338,17 @@ export class InteractiveCLI {
    */
   private async findConfigFile(): Promise<string | null> {
     const configFilenames = [
-      '.content-generatorrc.json',
-      '.content-generatorrc.js',
-      'content-generator.config.json',
-      'content-generator.config.js'
+      '.lyrarc',
+      '.lyrarc.json',
+      '.lyrarc.yaml',
+      '.lyrarc.yml',
+      '.lyrarc.js',
+      '.lyrarc.cjs',
+      '.lyrarc.mjs',
+      'lyra.config.json',
+      'lyra.config.js',
+      'lyra.config.cjs',
+      'lyra.config.mjs'
     ];
 
     let currentDir = process.cwd();
@@ -408,6 +415,6 @@ export class InteractiveCLI {
       }
     };
 
-    await fs.writeFile('.content-generatorrc.json', JSON.stringify(defaultConfig, null, 2), 'utf-8');
+    await fs.writeFile('.lyrarc.json', JSON.stringify(defaultConfig, null, 2), 'utf-8');
   }
 }

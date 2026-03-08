@@ -1,6 +1,6 @@
 {
   "name": "@captain_z/lyra",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Universal content generation framework with plugin-based architecture",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

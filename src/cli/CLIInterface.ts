@@ -355,12 +355,12 @@ export class CLIInterface {
 示例:
   $ lyra article --list
   $ lyra article --module 生活志
-  $ lyra article --module 生活志 --suggest --from ../Input,../Learning --limit 12
+  $ lyra article --module 生活志 --suggest --from ./Input,./Learning --limit 12
   $ lyra article --module 生活志 --auto-idea --requirements "控制在 1000 字内，口语化"
   $ lyra article --platform zhihu --module 声图志 --idea "成都春天的街头声音"
   $ lyra article --module 生活志 --idea "这周通勤观察" --dry-run
   $ lyra article --module 声图志 --idea "夜跑时听到的街头声音"
-  $ lyra article --interactive --config ./.content-generatorrc.json
+  $ lyra article --interactive --config ./.lyrarc.json
 `
         : `
 示例:
@@ -580,7 +580,7 @@ export class CLIInterface {
    */
   private async handleInit(options: any): Promise<void> {
     try {
-      const configPath = '.content-generatorrc.json';
+      const configPath = '.lyrarc.json';
       
       // 检查配置文件是否已存在
       const configExists = await this.fileExists(configPath);
@@ -1329,10 +1329,17 @@ export class CLIInterface {
    */
   private async findConfigFile(): Promise<string | null> {
     const configFilenames = [
-      '.content-generatorrc.json',
-      '.content-generatorrc.js',
-      'content-generator.config.json',
-      'content-generator.config.js'
+      '.lyrarc',
+      '.lyrarc.json',
+      '.lyrarc.yaml',
+      '.lyrarc.yml',
+      '.lyrarc.js',
+      '.lyrarc.cjs',
+      '.lyrarc.mjs',
+      'lyra.config.json',
+      'lyra.config.js',
+      'lyra.config.cjs',
+      'lyra.config.mjs'
     ];
 
     let currentDir = process.cwd();
@@ -1775,7 +1782,9 @@ export class CLIInterface {
 
       const finalOutput =
         generatedArticle
-          ? this.formatGeneratedArticleMarkdown(generatedArticle)
+          ? this.formatGeneratedArticleMarkdown(generatedArticle, {
+              moduleName: moduleLabel || moduleName || '生活志',
+            })
           : rendered;
 
       if (!outputPath && entryMode === 'article') {
@@ -1878,7 +1887,7 @@ export class CLIInterface {
       : sourcePoolsFromConfig;
     const finalSuggestionDirs = suggestionDirs.length > 0
       ? suggestionDirs
-      : this.parseSuggestionDirs('../Input,../Learning');
+      : this.parseSuggestionDirs('./Input,./Learning');
     const modulePromptMap = this.normalizeModulePromptMap(
       prompting.modulePromptMap,
       modulesBaseDir,
@@ -1939,7 +1948,7 @@ export class CLIInterface {
   private async loadRawConfigForPrompting(configPath: string): Promise<Record<string, unknown> | null> {
     try {
       const ext = path.extname(configPath).toLowerCase();
-      if (ext && ext !== '.json' && !configPath.endsWith('.content-generatorrc')) {
+      if (ext && ext !== '.json' && !configPath.endsWith('.lyrarc')) {
         return null;
       }
       const raw = await fs.readFile(configPath, 'utf-8');
@@ -1982,7 +1991,7 @@ export class CLIInterface {
     if (pools.length > 0) {
       return Array.from(new Set(pools));
     }
-    return this.parseSuggestionDirs('../Input,../Learning');
+    return this.parseSuggestionDirs('./Input,./Learning');
   }
 
   private resolvePromptModules(
@@ -2193,7 +2202,7 @@ export class CLIInterface {
     if (Array.isArray(fallbackDirs) && fallbackDirs.length > 0) {
       return fallbackDirs;
     }
-    return this.parseSuggestionDirs('../Input,../Learning');
+    return this.parseSuggestionDirs('./Input,./Learning');
   }
 
   private async loadPlatformPromptRules(
@@ -3472,9 +3481,14 @@ export class CLIInterface {
   private async requestModelCompletion(prompt: string, ai: ArticleAIConfig): Promise<string> {
     const provider = ai.provider || 'local';
     const maxRetries = Math.max(1, ai.maxRetries || 2);
+    const model = this.resolveArticleAIModelName(ai);
+    const timeoutMs = this.resolveArticleAITimeout(ai);
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      console.log(
+        `[ai] 请求中 (${attempt}/${maxRetries}): provider=${provider}, model=${model}, timeout=${timeoutMs}ms`
+      );
       try {
         if (provider === 'openai') {
           return await this.requestOpenAICompletion(prompt, ai);
@@ -3485,7 +3499,13 @@ export class CLIInterface {
         return await this.requestLocalCompletion(prompt, ai);
       } catch (error) {
         lastError = error;
+        console.warn(
+          `[ai] 请求失败 (${attempt}/${maxRetries}): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
         if (attempt < maxRetries) {
+          console.warn(`[ai] ${300 * attempt}ms 后自动重试...`);
           await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
         }
       }
@@ -3496,6 +3516,29 @@ export class CLIInterface {
         lastError instanceof Error ? lastError.message : String(lastError)
       }`
     );
+  }
+
+  private resolveArticleAIModelName(ai: ArticleAIConfig): string {
+    const model = String(ai.model || '').trim();
+    if (model) {
+      return model;
+    }
+    const provider = ai.provider || 'local';
+    if (provider === 'openai') {
+      return 'gpt-4o-mini';
+    }
+    if (provider === 'anthropic') {
+      return 'claude-3-5-sonnet-latest';
+    }
+    return 'llama3.1';
+  }
+
+  private resolveArticleAITimeout(ai: ArticleAIConfig): number {
+    const configured = Number(ai.timeout);
+    if (Number.isFinite(configured) && configured > 0) {
+      return Math.floor(configured);
+    }
+    return (ai.provider || 'local') === 'local' ? 90000 : 60000;
   }
 
   private async requestOpenAICompletion(prompt: string, ai: ArticleAIConfig): Promise<string> {
@@ -3636,8 +3679,11 @@ export class CLIInterface {
     if (fenced?.[1]) {
       candidates.push(fenced[1].trim());
     }
+    candidates.push(...this.extractJsonObjectCandidates(compact));
 
-    for (const candidate of candidates) {
+    const deduped = Array.from(new Set(candidates.filter(Boolean)));
+
+    for (const candidate of deduped) {
       try {
         const parsed = JSON.parse(candidate) as Record<string, unknown>;
         const title = String(parsed.title || '').trim();
@@ -3663,6 +3709,74 @@ export class CLIInterface {
       }
     }
     return null;
+  }
+
+  /**
+   * 从“解释文本 + JSON”混合输出中提取 JSON 对象候选。
+   * 常见于模型先输出注释/标题，再输出完整 JSON 的场景。
+   */
+  private extractJsonObjectCandidates(raw: string): string[] {
+    const text = String(raw || '');
+    if (!text) {
+      return [];
+    }
+
+    const result: string[] = [];
+    const maxCandidates = 8;
+    for (let start = 0; start < text.length && result.length < maxCandidates; start += 1) {
+      if (text[start] !== '{') {
+        continue;
+      }
+
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < text.length; i += 1) {
+        const ch = text[i];
+
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (ch === '\\') {
+            escaped = true;
+            continue;
+          }
+          if (ch === '"') {
+            inString = false;
+          }
+          continue;
+        }
+
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
+        if (ch === '{') {
+          depth += 1;
+          continue;
+        }
+        if (ch !== '}') {
+          continue;
+        }
+
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = text.slice(start, i + 1).trim();
+          if (
+            candidate.includes('"title"') &&
+            candidate.includes('"content"')
+          ) {
+            result.push(candidate);
+          }
+          start = i;
+          break;
+        }
+      }
+    }
+
+    return result;
   }
 
   private deriveTitleFromRaw(raw: string, fallbackIdea: string): string {
@@ -3703,18 +3817,61 @@ export class CLIInterface {
       .join(', ');
   }
 
-  private formatGeneratedArticleMarkdown(payload: GeneratedArticlePayload): string {
+  private formatGeneratedArticleMarkdown(
+    payload: GeneratedArticlePayload,
+    args: { moduleName: string }
+  ): string {
+    const normalizedTitle = String(payload.title || '').trim() || '未命名文章';
+    const normalizedModule = String(args.moduleName || '').trim() || '生活志';
+    const category = normalizedModule.startsWith('Z°N ')
+      ? normalizedModule
+      : `Z°N ${normalizedModule}`;
+    const body = this.removeLeadingTitleHeading(payload.content, normalizedTitle).trim();
+    const bodyChars = this.estimateReadableLength(body);
+    const readMinutes = Math.max(1, Math.ceil(bodyChars / 350));
+    const tipLine = `✨ 温馨提示：本文约${bodyChars}字，预计阅读时间${readMinutes}分钟。`;
+    const escapedTitle = this.escapeYamlDoubleQuoted(normalizedTitle);
+
     return [
-      `# ${payload.title}`,
-      '',
-      payload.content.trim(),
-      '',
+      '---',
+      `title: "${escapedTitle}"`,
+      'note_type: output_note',
+      `category: "${this.escapeYamlDoubleQuoted(category)}"`,
+      'weekly_recommended: false',
+      'tags:',
+      '  - para/output',
+      '  - type/output-note',
+      `image_prompt_nanobana_pro: "${this.escapeYamlDoubleQuoted(payload.imagePromptNanobanaPro || '')}"`,
       '---',
       '',
-      '## Nanobana Pro 生图提示词',
+      tipLine,
       '',
-      payload.imagePromptNanobanaPro.trim(),
+      body,
+      '',
     ].join('\n');
+  }
+
+  private removeLeadingTitleHeading(content: string, title: string): string {
+    const lines = String(content || '').split('\n');
+    const first = (lines[0] || '').trim();
+    if (!first.startsWith('#')) {
+      return String(content || '').trim();
+    }
+    const heading = first.replace(/^#+\s*/, '').trim();
+    if (!heading) {
+      return lines.slice(1).join('\n').trim();
+    }
+    if (heading === title || heading === `"${title}"`) {
+      return lines.slice(1).join('\n').trim();
+    }
+    return String(content || '').trim();
+  }
+
+  private escapeYamlDoubleQuoted(value: string): string {
+    return String(value || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, ' ');
   }
 
   private resolveLengthConstraint(args: {

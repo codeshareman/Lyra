@@ -31,14 +31,17 @@ export class ConfigManager implements IConfigManager {
     this.explorer = cosmiconfig('content-generator', {
       searchPlaces: [
         'package.json',
-        '.content-generatorrc',
-        '.content-generatorrc.json',
-        '.content-generatorrc.yaml',
-        '.content-generatorrc.yml',
-        '.content-generatorrc.js',
-        '.content-generatorrc.cjs',
-        'content-generator.config.js',
-        'content-generator.config.cjs',
+        '.lyrarc',
+        '.lyrarc.json',
+        '.lyrarc.yaml',
+        '.lyrarc.yml',
+        '.lyrarc.js',
+        '.lyrarc.cjs',
+        '.lyrarc.mjs',
+        'lyra.config.json',
+        'lyra.config.js',
+        'lyra.config.cjs',
+        'lyra.config.mjs',
       ],
     });
     this.hookManager = hookManager || null;
