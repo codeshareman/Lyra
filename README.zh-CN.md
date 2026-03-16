@@ -72,6 +72,38 @@ lyra weekly
 | `lyra prompt` | `lyra p` | `article` 的兼容别名 |
 | `lyra publish` | - | 发布到平台草稿（WeChat API/Playwright） |
 
+### 发布配置（多内容 + 模块关联）
+
+- 建议使用独立的 `wechat.publish.json` / `zhihu.publish.json` 配置文件
+- 发布配置仅包含平台发布字段（AI 配置跟随 `.lyrarc.json`）
+
+```json
+{
+  "lyraConfig": "./.lyrarc.json",
+  "title": "默认标题",
+  "author": "Lyra",
+  "digest": "默认摘要",
+  "thumb_image_path": "./Output/Z° North/Publish/default-cover.png",
+  "cover_source_order": ["ai", "unsplash", "placeholder"],
+  "articles": [
+    {
+      "title": "Weekly #12",
+      "module": "weekly",
+      "contentFile": "./Output/Z° North/Z°N Weekly/drafts/2026-03-16-weekly.html"
+    },
+    {
+      "title": "生活志 · 通勤观察",
+      "contentFile": "./Output/Z° North/Z°N 生活志/drafts/2026-03-16-life.html"
+    }
+  ]
+}
+```
+
+发布命令：
+```bash
+lyra publish --config ./wechat.publish.json
+```
+
 ## 元数据与标签治理
 
 `lyra check-metadata` 同时支持目录与单文件，并支持自动去重和 AI 补全标签。

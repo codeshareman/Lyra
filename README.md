@@ -166,6 +166,38 @@ For frequent publishing, increment at least `PATCH` for every release.
 
 ## Troubleshooting
 
+### Publish Config (Multi-Article + Module Matching)
+
+- Prefer dedicated `wechat.publish.json` / `zhihu.publish.json` files
+- Publish config should only include platform publish fields (AI follows `.lyrarc.json`)
+
+```json
+{
+  "lyraConfig": "./.lyrarc.json",
+  "title": "Default Title",
+  "author": "Lyra",
+  "digest": "Default digest",
+  "thumb_image_path": "./Output/Z° North/Publish/default-cover.png",
+  "cover_source_order": ["ai", "unsplash", "placeholder"],
+  "articles": [
+    {
+      "title": "Weekly #12",
+      "module": "weekly",
+      "contentFile": "./Output/Z° North/Z°N Weekly/drafts/2026-03-16-weekly.html"
+    },
+    {
+      "title": "Life Notes",
+      "contentFile": "./Output/Z° North/Z°N 生活志/drafts/2026-03-16-life.html"
+    }
+  ]
+}
+```
+
+Publish command:
+```bash
+lyra publish --config ./wechat.publish.json
+```
+
 ### `npm publish` fails at `prepublishOnly`
 
 If publish fails during `npm run build` with `EPERM` on `dist`, rebuild from clean state and check permissions:

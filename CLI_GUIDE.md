@@ -135,7 +135,7 @@ lyra publish --method playwright --config ./wechat_publish.json --content ./outp
       "mode": "publish",
       "publishAt": "2026-03-20 09:00",
       "contentFile": "./Output/Z° North/Z°N 生活志/drafts/示例文章.wechat.html",
-      "configFile": "./wechat_publish.json"
+      "configFile": "./wechat.publish.json"
     }
   }
 }
@@ -143,24 +143,40 @@ lyra publish --method playwright --config ./wechat_publish.json --content ./outp
 
 说明：
 - `apiScript` 可选；不提供时，CLI 内置 WeChat API 调用逻辑。
-- `configFile` 建议指向独立的 `wechat_publish.json`，包含 `title/author/digest/thumb_media_id` 等字段。
 
-封面图自动生成（wechat_publish.json 可选配置）：
+- `configFile` 建议指向独立的 `wechat.publish.json`，仅包含平台发布字段（`title/author/digest/thumb_media_id` 等）。
+- 如果显式传 `--config`，则以该文件为准；未传时使用 `.lyrarc.json` 的 `publish.<platform>`。
+
+wechat.publish.json（最小示例）：
 ```json
 {
-  "cover_source_order": ["ai", "unsplash", "placeholder"],
-  "cover_ratio": "16:9",
-  "cover_prompt": "生活志封面，电影感，温暖自然光",
-  "cover_ai_endpoint": "https://your-ai-service/generate-cover",
-  "cover_ai_response_url": "imageUrl",
-  "cover_ai_response_base64": "imageBase64",
-  "cover_ai_response_mime": "mime",
-  "unsplash_access_key": "${UNSPLASH_ACCESS_KEY}",
-  "unsplash_query": "city life, warm light",
-  "unsplash_image_field": "results.0.urls.regular",
-  "placeholder_cover": true
+  "title": "Lyra 发布测试",
+  "author": "Lyra",
+  "digest": "发布执行测试",
+  "thumb_image_path": "./Output/Z° North/Publish/default-cover.png"
 }
 ```
+
+封面图自动生成（推荐在 `.lyrarc.json` 的 global/template ai.image 配置）：
+```json
+{
+  "global": {
+    "ai": {
+      "image": {
+        "enabled": true,
+        "script": "./scripts/generate-cover-image.js",
+        "ratio": "16:9",
+        "prompt": {
+          "base": "生活志封面，电影感，温暖自然光",
+          "usePlatformImageSystem": true
+        }
+      }
+    }
+  }
+}
+```
+
+> 兼容说明：旧的 `wechat.publish.json` 中 `cover_*` 字段仍可用，但推荐迁移到 `global.ai.image` / `templates.*.ai.image`。
 
 ### 6. 自动生成文章头图（4:3 / 16:9）
 ```bash
@@ -168,12 +184,12 @@ lyra publish --method playwright --config ./wechat_publish.json --content ./outp
 lyra article --module 生活志 --auto-idea
 ```
 
-配置示例（放在 ai.prompting.articleImage）：
+配置示例（放在 ai.image）：
 ```json
 {
-  "ai": {
-    "prompting": {
-      "articleImage": {
+  "global": {
+    "ai": {
+      "image": {
         "enabled": true,
         "script": "./scripts/generate-cover-image.js",
         "ratio": "16:9",

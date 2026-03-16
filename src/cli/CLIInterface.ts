@@ -62,13 +62,20 @@ interface ResolvedPromptRuntimeConfig {
   defaultModule?: string;
   baseSystemPrompt: string;
   outputBaseDir: string;
+  moduleBaseDir: string;
+  moduleDraftsDirName: string;
   outputFilenameTemplate: string;
   moduleAliases: Record<string, string>;
   modules: Record<string, PromptModuleConfig>;
   platformSystemPromptFiles: Record<string, string>;
+  platformImageSystemPromptFiles: Record<string, string>;
+  platformImageCoverSystemPromptFiles: Record<string, string>;
+  platformImageInlineSystemPromptFiles: Record<string, string>;
   articleAI: ArticleAIConfig;
   articleImage: ArticleImageConfig;
   outputDraftsDirName: string;
+  hooks: Record<string, string>;
+  templateName: string;
 }
 
 interface PromptWizardResult {
@@ -84,11 +91,13 @@ interface PromptWizardResult {
 interface PromptModuleConfig {
   key: string;
   label: string;
-  publishDir: string;
+  moduleDir: string;
   promptFile?: string;
   platformPromptFiles: Record<string, string>;
   sources: string[];
   coverPrompt?: string;
+  template?: string;
+  coverImage?: Record<string, any>;
 }
 
 interface ArticleAIConfig {
@@ -112,6 +121,49 @@ interface ArticleImageConfig {
   insertCoverImage?: boolean;
   promptDir?: string;
   promptMap?: Record<string, string>;
+  usePlatformImageSystem?: boolean;
+  coverPromptBase?: string;
+  inlinePromptBase?: string;
+  baseImage?: string;
+  input?: {
+    image?: string;
+    mask?: string;
+    editText?: string;
+    prompt?: string;
+  };
+  textOverlay?: {
+    textTemplate?: string;
+    selector?: 'title' | 'module';
+    replace?: {
+      pattern: string;
+      with: string;
+    };
+    font?: string;
+    size?: number;
+    x?: number;
+    y?: number;
+    color?: string;
+  };
+  coverSourceOrder?: Array<'ai' | 'unsplash' | 'script' | 'placeholder'>;
+  coverRatio?: string;
+  coverAiEndpoint?: string;
+  coverAiApiKeyEnv?: string;
+  coverAiResponseUrl?: string;
+  coverAiResponseBase64?: string;
+  coverAiResponseMime?: string;
+  unsplashAccessKeyEnv?: string;
+  unsplashQuery?: string;
+  cover?: Record<string, any>;
+  inline?: Record<string, any>;
+}
+
+interface PublishModuleContext {
+  rawModule?: string;
+  moduleKey?: string;
+  moduleLabel?: string;
+  moduleConfig?: PromptModuleConfig;
+  runtimeConfig?: ResolvedPromptRuntimeConfig;
+  loadedConfig?: Record<string, any> | null;
 }
 
 interface GeneratedArticlePayload {
@@ -227,6 +279,7 @@ export class CLIInterface {
       .option('-m, --method <name>', '发布方式（api|playwright）', 'api')
       .option('-c, --config <path>', '发布配置 JSON 文件路径')
       .option('-f, --file <path>', '发布配置 JSON 文件路径（--config 别名）')
+      .option('-M, --module <name>', '模块名称（用于关联提示词与发布配置）')
       .option('-C, --content <path>', '内容文件路径（HTML）')
       .option('-E, --env <path>', '.env 文件路径')
       .option('-s, --script <path>', '自定义发布脚本路径')
@@ -640,6 +693,23 @@ export class CLIInterface {
       process.exit(1);
     }
 
+    const lyraConfigPath = this.resolveLyraConfigPath(
+      publishConfig,
+      configDir,
+      resolvedConfigPath
+    );
+    const rawModule = String(
+      options.module
+        || publishConfig?.publish?.wechat?.module
+        || publishConfig?.publish?.module
+        || publishConfig?.module
+        || ''
+    ).trim();
+    const moduleContext = await this.resolvePublishModuleContext({
+      lyraConfigPath,
+      rawModule: rawModule || undefined,
+    });
+
     const execute = Boolean(options.execute);
     const dryRun = !execute;
 
@@ -663,7 +733,10 @@ export class CLIInterface {
       contentPath = path.resolve(configDir, contentPath);
     }
 
-    if (!contentPath) {
+    const hasInlineArticles = Array.isArray(publishConfig?.articles)
+      || Array.isArray(publishConfig?.publish?.wechat?.articles);
+
+    if (!contentPath && !hasInlineArticles) {
       if (process.stdout.isTTY) {
         const prompts = await import('@clack/prompts');
         const picked = await prompts.text({
@@ -774,6 +847,34 @@ export class CLIInterface {
       }
     }
 
+    const publishLevelHooks = this.mergeHooks(
+      (publishConfig?.hooks && typeof publishConfig.hooks === 'object') ? publishConfig.hooks : {},
+      (publishConfig?.publish?.hooks && typeof publishConfig.publish.hooks === 'object')
+        ? publishConfig.publish.hooks
+        : {}
+    );
+    const publishHooks = this.mergeHooks(
+      moduleContext.runtimeConfig?.hooks || {},
+      publishLevelHooks
+    );
+    await this.runHookIfConfigured({
+      hookName: 'publish.before',
+      hooks: publishHooks,
+      configDir,
+      payload: {
+        platform,
+        method,
+        mode: publishMode,
+        contentPath,
+        publishConfigPath,
+      },
+      context: {
+        platform,
+        method,
+        mode: publishMode,
+      },
+    });
+
     if (useScript) {
       await this.runPublishScript(args);
     } else {
@@ -783,9 +884,90 @@ export class CLIInterface {
         envPath,
         mode: publishMode,
         dryRun,
+        moduleContext,
       });
     }
+    await this.runHookIfConfigured({
+      hookName: 'publish.after',
+      hooks: publishHooks,
+      configDir,
+      payload: {
+        platform,
+        method,
+        mode: publishMode,
+        contentPath,
+        publishConfigPath,
+      },
+      context: {
+        platform,
+        method,
+        mode: publishMode,
+      },
+    });
     console.log('✅ 发布流程完成');
+  }
+
+  private resolveLyraConfigPath(
+    publishConfig: Record<string, any>,
+    configDir: string,
+    fallbackPath: string
+  ): string | undefined {
+    const direct = publishConfig?.lyraConfig
+      || publishConfig?.lyra_config
+      || publishConfig?.publish?.lyraConfig
+      || publishConfig?.publish?.lyra_config
+      || publishConfig?.publish?.wechat?.lyraConfig
+      || publishConfig?.publish?.wechat?.lyra_config;
+    if (typeof direct === 'string' && direct.trim()) {
+      return path.resolve(configDir, direct.trim());
+    }
+    const looksLikeLyraConfig = Boolean(publishConfig?.templates || publishConfig?.global);
+    return looksLikeLyraConfig ? fallbackPath : undefined;
+  }
+
+  private async resolvePublishModuleContext(args: {
+    lyraConfigPath?: string;
+    rawModule?: string;
+  }): Promise<PublishModuleContext> {
+    if (!args.lyraConfigPath) {
+      return { rawModule: args.rawModule };
+    }
+
+    let runtimeConfig: ResolvedPromptRuntimeConfig | undefined;
+    let loadedConfig: Record<string, any> | null = null;
+    try {
+      runtimeConfig = await this.resolvePromptRuntimeConfig({ config: args.lyraConfigPath });
+      const manager = new ConfigManager();
+      loadedConfig = await manager.load(args.lyraConfigPath);
+    } catch (error) {
+      console.warn(
+        `[publish] 读取模块配置失败，已跳过模块关联: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      return { rawModule: args.rawModule };
+    }
+
+    const rawModule = args.rawModule || runtimeConfig.defaultModule;
+    const moduleKey = rawModule ? this.resolveModuleKey(runtimeConfig, rawModule) : null;
+    const moduleConfig = moduleKey ? runtimeConfig.modules[moduleKey] : undefined;
+    const moduleLabel = moduleConfig?.label || moduleKey || rawModule;
+
+    const templateCover = (templateImageConfig.cover && typeof templateImageConfig.cover === 'object')
+      ? (templateImageConfig.cover as Record<string, unknown>)
+      : {};
+    const globalCover = (globalImage.cover && typeof globalImage.cover === 'object')
+      ? (globalImage.cover as Record<string, unknown>)
+      : {};
+
+    return {
+      rawModule: rawModule || undefined,
+      moduleKey: moduleKey || undefined,
+      moduleLabel: moduleLabel || undefined,
+      moduleConfig,
+      runtimeConfig,
+      loadedConfig,
+    };
   }
 
   private loadEnvFile(filePath?: string): void {
@@ -813,10 +995,11 @@ export class CLIInterface {
 
   private async runPublishApiFlow(args: {
     publishConfigPath: string;
-    contentPath: string;
+    contentPath?: string;
     envPath?: string;
     mode: 'draft' | 'publish';
     dryRun: boolean;
+    moduleContext?: PublishModuleContext;
   }): Promise<void> {
     const wechatConfig = await this.readJsonFile(args.publishConfigPath);
     if (!wechatConfig || typeof wechatConfig !== 'object') {
@@ -824,24 +1007,35 @@ export class CLIInterface {
     }
     this.loadEnvFile(args.envPath);
 
-    const html = await fs.readFile(args.contentPath, 'utf-8');
     const wechatConfigTyped = wechatConfig as Record<string, any>;
-    let payload = this.buildWechatDraftPayload(wechatConfigTyped, html);
+    const configDir = path.dirname(args.publishConfigPath);
+    const articles = await this.resolveWechatArticlesForPublish({
+      wechatConfig: wechatConfigTyped,
+      contentPath: args.contentPath,
+      configDir,
+      moduleContext: args.moduleContext,
+      platform: 'wechat',
+    });
+    let payload = this.buildWechatDraftPayloadFromArticles(articles);
 
     if (args.dryRun) {
-      if (!payload.articles[0].thumb_media_id) {
-        const thumbSource = this.resolveThumbImageSource(wechatConfigTyped);
+      for (let index = 0; index < articles.length; index += 1) {
+        if (payload.articles?.[index]?.thumb_media_id) {
+          continue;
+        }
+        const articleConfig = articles[index];
+        const thumbSource = this.resolveThumbImageSource(articleConfig);
         if (thumbSource) {
-          payload = this.assignDraftThumbMedia(payload, '__AUTO_UPLOAD__');
-          console.log('[publish] dry-run: 缺少 thumb_media_id，将尝试自动上传封面图');
-        } else if (this.canAutoGenerateCover(wechatConfigTyped)) {
-          payload = this.assignDraftThumbMedia(payload, '__AUTO_GENERATED__');
-          console.log('[publish] dry-run: 缺少封面图，将自动生成/获取封面图');
-        } else if (this.shouldUsePlaceholderCover(wechatConfigTyped)) {
-          payload = this.assignDraftThumbMedia(payload, '__AUTO_PLACEHOLDER__');
-          console.log('[publish] dry-run: 缺少封面图，将使用占位图生成 thumb_media_id');
+          payload = this.assignDraftThumbMedia(payload, '__AUTO_UPLOAD__', index);
+          console.log(`[publish] dry-run: 第${index + 1}篇缺少 thumb_media_id，将尝试自动上传封面图`);
+        } else if (this.canAutoGenerateCover(articleConfig)) {
+          payload = this.assignDraftThumbMedia(payload, '__AUTO_GENERATED__', index);
+          console.log(`[publish] dry-run: 第${index + 1}篇缺少封面图，将自动生成/获取封面图`);
+        } else if (this.shouldUsePlaceholderCover(articleConfig)) {
+          payload = this.assignDraftThumbMedia(payload, '__AUTO_PLACEHOLDER__', index);
+          console.log(`[publish] dry-run: 第${index + 1}篇缺少封面图，将使用占位图生成 thumb_media_id`);
         } else {
-          console.log('[publish] dry-run: 缺少 thumb_media_id，且未提供封面图路径/URL');
+          console.log(`[publish] dry-run: 第${index + 1}篇缺少 thumb_media_id，且未提供封面图路径/URL`);
         }
       }
       console.log(JSON.stringify({ mode: args.mode, draftPayload: payload }, null, 2));
@@ -853,18 +1047,22 @@ export class CLIInterface {
       throw new Error('缺少 access_token，请在配置或 WECHAT_ACCESS_TOKEN 中提供');
     }
 
-    if (!payload.articles[0].thumb_media_id) {
-      let thumbSource = this.resolveThumbImageSource(wechatConfigTyped);
+    for (let index = 0; index < articles.length; index += 1) {
+      if (payload.articles?.[index]?.thumb_media_id) {
+        continue;
+      }
+      const articleConfig = articles[index];
+      let thumbSource = this.resolveThumbImageSource(articleConfig);
       if (!thumbSource) {
         thumbSource = await this.resolveAutoCoverSource({
-          config: wechatConfigTyped,
-          html,
+          config: articleConfig,
+          html: String(articleConfig.content || ''),
         });
       }
-      if (!thumbSource && this.shouldUsePlaceholderCover(wechatConfigTyped)) {
+      if (!thumbSource && this.shouldUsePlaceholderCover(articleConfig)) {
         const placeholderPath = await this.generatePlaceholderCover({
-          title: wechatConfigTyped.title,
-          ratio: String(wechatConfigTyped.cover_ratio || '16:9'),
+          title: articleConfig.title,
+          ratio: String(articleConfig.cover_ratio || '16:9'),
         });
         thumbSource = { type: 'path', value: placeholderPath };
       }
@@ -877,7 +1075,7 @@ export class CLIInterface {
         source: thumbSource,
         endpoint: wechatConfigTyped.thumb_upload_endpoint || '/material/add_material?type=thumb',
       });
-      payload = this.assignDraftThumbMedia(payload, uploaded.media_id);
+      payload = this.assignDraftThumbMedia(payload, uploaded.media_id, index);
     }
 
     const baseUrl = (wechatConfig as any).api_base || 'https://api.weixin.qq.com/cgi-bin';
@@ -931,20 +1129,256 @@ export class CLIInterface {
     if (!config.title) {
       throw new Error('发布配置缺少 title，请使用独立的 wechat_publish.json 或补充字段');
     }
-    return {
-      articles: [
-        {
-          title: config.title,
-          author: config.author || '',
-          digest: config.digest || '',
-          content: html,
-          content_source_url: config.source_url || '',
-          thumb_media_id: config.thumb_media_id || '',
-          need_open_comment: Number(config.need_open_comment || 0),
-          only_fans_can_comment: Number(config.only_fans_can_comment || 0),
-        },
-      ],
+    const article = {
+      title: config.title,
+      author: config.author || '',
+      digest: config.digest || '',
+      content: html,
+      content_source_url: config.source_url || '',
+      thumb_media_id: config.thumb_media_id || '',
+      need_open_comment: Number(config.need_open_comment || 0),
+      only_fans_can_comment: Number(config.only_fans_can_comment || 0),
     };
+    return this.buildWechatDraftPayloadFromArticles([article]);
+  }
+
+  private buildWechatDraftPayloadFromArticles(articles: Record<string, any>[]): Record<string, any> {
+    const normalized = articles.map((article) => {
+      if (!article.title) {
+        throw new Error('发布配置缺少 title，请在每篇文章中提供 title');
+      }
+      if (!article.content) {
+        throw new Error(`发布配置缺少 content: ${article.title}`);
+      }
+      return {
+        title: article.title,
+        author: article.author || '',
+        digest: article.digest || '',
+        content: article.content,
+        content_source_url: article.content_source_url || article.source_url || '',
+        thumb_media_id: article.thumb_media_id || '',
+        need_open_comment: Number(article.need_open_comment || 0),
+        only_fans_can_comment: Number(article.only_fans_can_comment || 0),
+      };
+    });
+    return { articles: normalized };
+  }
+
+  private async resolveWechatArticlesForPublish(args: {
+    wechatConfig: Record<string, any>;
+    contentPath?: string;
+    configDir: string;
+    moduleContext?: PublishModuleContext;
+    platform: string;
+  }): Promise<Record<string, any>[]> {
+    const runtimeConfig = args.moduleContext?.runtimeConfig;
+    const loadedConfig = args.moduleContext?.loadedConfig;
+    const rawArticles = Array.isArray(args.wechatConfig.articles)
+      ? (args.wechatConfig.articles as Array<Record<string, any>>)
+      : null;
+
+    if (!rawArticles || rawArticles.length === 0) {
+      if (!args.contentPath) {
+        throw new Error('缺少内容文件路径，请使用 --content 或在发布配置中指定 contentFile');
+      }
+      const html = await fs.readFile(args.contentPath, 'utf-8');
+      const single = await this.applyModuleCoverPrompt({
+        articleConfig: {
+          ...args.wechatConfig,
+          content: html,
+        },
+        moduleContext: args.moduleContext,
+        platform: args.platform,
+      });
+      return [single];
+    }
+
+    const defaults = { ...args.wechatConfig };
+    delete defaults.articles;
+    delete defaults.contents;
+
+    const resolved: Record<string, any>[] = [];
+    for (const item of rawArticles) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const entry = { ...defaults, ...item };
+      const contentFileRaw = entry.contentFile || entry.content_file || entry.contentPath;
+      let resolvedContentFile: string | undefined;
+      if (!entry.content && contentFileRaw) {
+        const contentFile = path.isAbsolute(contentFileRaw)
+          ? contentFileRaw
+          : path.resolve(args.configDir, contentFileRaw);
+        resolvedContentFile = contentFile;
+        entry.content = await fs.readFile(contentFile, 'utf-8');
+      }
+      if (!entry.content && rawArticles.length === 1 && args.contentPath) {
+        entry.content = await fs.readFile(args.contentPath, 'utf-8');
+      }
+      if (!entry.module && runtimeConfig && resolvedContentFile) {
+        const inferredModule = this.resolveModuleKeyByContentPath(runtimeConfig, resolvedContentFile);
+        if (inferredModule) {
+          entry.module = inferredModule;
+        } else {
+          console.warn(`[publish] 未能从路径匹配模块: ${resolvedContentFile}`);
+        }
+      } else if (!entry.module && !runtimeConfig) {
+        console.warn('[publish] 未加载 lyra 配置，无法自动匹配模块');
+      }
+
+      if (loadedConfig && runtimeConfig) {
+        const moduleKey = String(entry.module || '').trim();
+        const imageConfig = this.resolvePublishImageConfig({
+          loadedConfig,
+          moduleKey,
+          runtimeConfig,
+        });
+        if (imageConfig) {
+          entry.cover_script = imageConfig.script || entry.cover_script || entry.coverScript;
+          entry.cover_ratio = imageConfig.coverRatio || imageConfig.ratio || entry.cover_ratio;
+          entry.cover_source_order = imageConfig.coverSourceOrder || entry.cover_source_order;
+          entry.cover_ai_endpoint = imageConfig.coverAiEndpoint || entry.cover_ai_endpoint;
+          entry.cover_ai_api_key_env = imageConfig.coverAiApiKeyEnv || entry.cover_ai_api_key_env;
+          entry.cover_ai_response_url = imageConfig.coverAiResponseUrl || entry.cover_ai_response_url;
+          entry.cover_ai_response_base64 = imageConfig.coverAiResponseBase64 || entry.cover_ai_response_base64;
+          entry.cover_ai_response_mime = imageConfig.coverAiResponseMime || entry.cover_ai_response_mime;
+          entry.unsplash_access_key_env = imageConfig.unsplashAccessKeyEnv || entry.unsplash_access_key_env;
+          entry.unsplash_query = imageConfig.unsplashQuery || entry.unsplash_query;
+        }
+      }
+
+      const enriched = await this.applyModuleCoverPrompt({
+        articleConfig: entry,
+        moduleContext: args.moduleContext,
+        platform: args.platform,
+      });
+      resolved.push(enriched);
+    }
+    return resolved;
+  }
+
+  private resolveModuleKeyByContentPath(
+    runtimeConfig: ResolvedPromptRuntimeConfig,
+    contentPath: string
+  ): string | null {
+    const absContent = path.resolve(contentPath);
+    const candidates: Array<{ key: string; dir: string }> = [];
+
+    for (const module of Object.values(runtimeConfig.modules)) {
+      const dir = module.moduleDir;
+      if (!dir) {
+        continue;
+      }
+      const absDir = path.isAbsolute(dir)
+        ? dir
+        : path.resolve(runtimeConfig.moduleBaseDir, dir);
+      if (absContent.startsWith(`${absDir}${path.sep}`) || absContent === absDir) {
+        candidates.push({ key: module.key, dir: absDir });
+      }
+    }
+
+    if (candidates.length === 0) {
+      return null;
+    }
+    candidates.sort((a, b) => b.dir.length - a.dir.length);
+    return candidates[0].key;
+  }
+
+  private resolvePublishImageConfig(args: {
+    loadedConfig: Record<string, any>;
+    moduleKey: string;
+    runtimeConfig: ResolvedPromptRuntimeConfig;
+  }): ArticleImageConfig | null {
+    const globalAI = args.loadedConfig?.global?.ai;
+    const templates = args.loadedConfig?.templates || {};
+    const moduleKey = args.moduleKey || '';
+    const moduleTemplate = args.runtimeConfig.modules?.[moduleKey]?.template;
+    const templateName = moduleTemplate || (moduleKey === 'weekly' ? 'weekly' : 'article');
+    const templateAI = templates?.[templateName]?.ai;
+    const base = this.resolveArticleImageConfig(globalAI, templateAI, {});
+    const moduleCoverImage = args.runtimeConfig.modules?.[moduleKey]?.coverImage;
+    return this.applyModuleImageOverrides(base, moduleCoverImage);
+  }
+
+  private applyModuleImageOverrides(
+    base: ArticleImageConfig,
+    moduleImage?: Record<string, any>
+  ): ArticleImageConfig {
+    if (!moduleImage || typeof moduleImage !== 'object') {
+      return base;
+    }
+    const merged: ArticleImageConfig = { ...base };
+    const copyIf = (key: keyof ArticleImageConfig, value: any) => {
+      if (value !== undefined && value !== null && value !== '') {
+        (merged as any)[key] = value;
+      }
+    };
+    copyIf('script', moduleImage.script);
+    copyIf('ratio', moduleImage.ratio);
+    copyIf('outputDir', moduleImage.outputDir);
+    copyIf('insertCoverImage', moduleImage.insertCoverImage);
+    copyIf('promptDir', moduleImage.promptDir);
+    copyIf('promptMap', moduleImage.promptMap);
+    copyIf('usePlatformImageSystem', moduleImage.usePlatformImageSystem);
+    copyIf('baseImage', moduleImage.baseImage);
+    if (moduleImage.input && typeof moduleImage.input === 'object') {
+      merged.input = { ...(merged.input || {}), ...moduleImage.input };
+    }
+    if (moduleImage.textOverlay && typeof moduleImage.textOverlay === 'object') {
+      merged.textOverlay = { ...(merged.textOverlay || {}), ...moduleImage.textOverlay };
+    }
+    if (typeof moduleImage.promptBase === 'string' && moduleImage.promptBase.trim()) {
+      merged.coverPromptBase = moduleImage.promptBase.trim();
+    }
+    if (typeof moduleImage.coverPromptBase === 'string' && moduleImage.coverPromptBase.trim()) {
+      merged.coverPromptBase = moduleImage.coverPromptBase.trim();
+    }
+    if (typeof moduleImage.inlinePromptBase === 'string' && moduleImage.inlinePromptBase.trim()) {
+      merged.inlinePromptBase = moduleImage.inlinePromptBase.trim();
+    }
+    copyIf('coverSourceOrder', moduleImage.coverSourceOrder);
+    copyIf('coverRatio', moduleImage.coverRatio);
+    copyIf('coverAiEndpoint', moduleImage.coverAiEndpoint);
+    copyIf('coverAiApiKeyEnv', moduleImage.coverAiApiKeyEnv);
+    copyIf('coverAiResponseUrl', moduleImage.coverAiResponseUrl);
+    copyIf('coverAiResponseBase64', moduleImage.coverAiResponseBase64);
+    copyIf('coverAiResponseMime', moduleImage.coverAiResponseMime);
+    copyIf('unsplashAccessKeyEnv', moduleImage.unsplashAccessKeyEnv);
+    copyIf('unsplashQuery', moduleImage.unsplashQuery);
+    return merged;
+  }
+
+  private async applyModuleCoverPrompt(args: {
+    articleConfig: Record<string, any>;
+    moduleContext?: PublishModuleContext;
+    platform: string;
+  }): Promise<Record<string, any>> {
+    const cloned = { ...args.articleConfig };
+    if (cloned.cover_prompt || cloned.coverPrompt) {
+      return cloned;
+    }
+    const runtimeConfig = args.moduleContext?.runtimeConfig;
+    if (!runtimeConfig) {
+      return cloned;
+    }
+    const rawModule = String(cloned.module || args.moduleContext?.rawModule || '').trim();
+    const moduleKey = rawModule ? this.resolveModuleKey(runtimeConfig, rawModule) : null;
+    const moduleConfig = moduleKey ? runtimeConfig.modules[moduleKey] : args.moduleContext?.moduleConfig;
+    const moduleName = moduleConfig?.label || moduleKey || rawModule || args.moduleContext?.moduleLabel || 'article';
+    if (!moduleConfig) {
+      return cloned;
+    }
+    const coverPrompt = await this.resolveCoverPrompt({
+      runtimeConfig,
+      moduleConfig,
+      moduleName,
+      platform: args.platform,
+      fallbackPrompt: '',
+    });
+    if (coverPrompt) {
+      cloned.cover_prompt = coverPrompt;
+    }
+    return cloned;
   }
 
   private resolveThumbImageSource(config: Record<string, any>): { type: 'path' | 'url'; value: string } | null {
@@ -969,16 +1403,18 @@ export class CLIInterface {
 
   private canAutoGenerateCover(config: Record<string, any>): boolean {
     const order = this.resolveCoverSourceOrder(config);
-    return order.includes('ai') || order.includes('unsplash');
+    return order.includes('ai') || order.includes('unsplash') || order.includes('script');
   }
 
-  private resolveCoverSourceOrder(config: Record<string, any>): Array<'ai' | 'unsplash' | 'placeholder'> {
+  private resolveCoverSourceOrder(
+    config: Record<string, any>
+  ): Array<'ai' | 'unsplash' | 'script' | 'placeholder'> {
     const raw = config.cover_source_order || config.coverSourceOrder;
     if (Array.isArray(raw)) {
       const cleaned = raw
         .map((item) => String(item || '').trim().toLowerCase())
-        .filter((item) => item === 'ai' || item === 'unsplash' || item === 'placeholder') as Array<
-        'ai' | 'unsplash' | 'placeholder'
+        .filter((item) => item === 'ai' || item === 'unsplash' || item === 'script' || item === 'placeholder') as Array<
+        'ai' | 'unsplash' | 'script' | 'placeholder'
       >;
       if (cleaned.length > 0) {
         return cleaned;
@@ -990,6 +1426,7 @@ export class CLIInterface {
   private async resolveAutoCoverSource(args: {
     config: Record<string, any>;
     html: string;
+    configDir?: string;
   }): Promise<{ type: 'path' | 'url'; value: string } | null> {
     const order = this.resolveCoverSourceOrder(args.config);
     for (const source of order) {
@@ -1007,6 +1444,18 @@ export class CLIInterface {
           if (result) return result;
         } catch (error) {
           console.warn(`[publish] Unsplash 获取失败，降级处理: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (source === 'script') {
+        try {
+          const result = await this.tryGenerateCoverFromScript({
+            config: args.config,
+            html: args.html,
+            configDir: args.configDir,
+          });
+          if (result) return result;
+        } catch (error) {
+          console.warn(`[publish] 封面脚本执行失败，降级处理: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       if (source === 'placeholder') {
@@ -1038,6 +1487,8 @@ export class CLIInterface {
       content: this.stripHtml(html),
       prompt: config.cover_prompt || config.coverPrompt || '',
       ratio,
+      mode: config.cover_mode || config.coverMode,
+      input: config.cover_input || config.coverInput,
     };
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1069,6 +1520,52 @@ export class CLIInterface {
       return { type: 'path', value: filePath };
     }
     return null;
+  }
+
+  private resolveCoverScriptPath(config: Record<string, any>, configDir?: string): string | null {
+    const raw = String(
+      config.cover_script
+      || config.coverScript
+      || config.cover_script_path
+      || config.coverScriptPath
+      || ''
+    ).trim();
+    if (!raw) {
+      return null;
+    }
+    return this.resolvePathFromConfig(configDir, raw) || path.resolve(process.cwd(), raw);
+  }
+
+  private async tryGenerateCoverFromScript(args: {
+    config: Record<string, any>;
+    html: string;
+    configDir?: string;
+  }): Promise<{ type: 'path'; value: string } | null> {
+    const scriptPath = this.resolveCoverScriptPath(args.config, args.configDir);
+    if (!scriptPath) {
+      return null;
+    }
+    const ratio = String(args.config.cover_ratio || '16:9');
+    const title = String(args.config.title || 'Untitled');
+    const outputPath = path.join(
+      os.tmpdir(),
+      `lyra-cover-${Date.now()}-${Math.random().toString(16).slice(2)}.svg`
+    );
+    const payload = {
+      title,
+      content: this.stripHtml(args.html),
+      prompt: String(args.config.cover_prompt || args.config.coverPrompt || ''),
+      ratio,
+      outputPath,
+    };
+    const inputFile = path.join(
+      os.tmpdir(),
+      `lyra-cover-input-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    );
+    await fs.writeFile(inputFile, JSON.stringify(payload, null, 2), 'utf-8');
+    const result = await this.runCoverScript(scriptPath, inputFile);
+    const coverImage = result.coverImage || result.outputPath || outputPath;
+    return { type: 'path', value: coverImage };
   }
 
   private async tryFetchCoverFromUnsplash(
@@ -1162,10 +1659,14 @@ export class CLIInterface {
     return outPath;
   }
 
-  private assignDraftThumbMedia(payload: Record<string, any>, mediaId: string): Record<string, any> {
+  private assignDraftThumbMedia(
+    payload: Record<string, any>,
+    mediaId: string,
+    index = 0
+  ): Record<string, any> {
     const cloned = JSON.parse(JSON.stringify(payload));
-    if (cloned?.articles?.[0]) {
-      cloned.articles[0].thumb_media_id = mediaId;
+    if (cloned?.articles?.[index]) {
+      cloned.articles[index].thumb_media_id = mediaId;
     }
     return cloned;
   }
@@ -2442,7 +2943,7 @@ export class CLIInterface {
         modulesBaseDir: runtimeConfig.modulesBaseDir,
         configDir: runtimeConfig.configDir,
       });
-      const rendered = this.composeLayeredPrompt({
+      let rendered = this.composeLayeredPrompt({
         topic: displayTopic,
         topicTemplate: topicKey,
         moduleName,
@@ -2453,6 +2954,18 @@ export class CLIInterface {
         modulePrompt,
         baseSystemPrompt: runtimeConfig.baseSystemPrompt,
       });
+      rendered = await this.runHookIfConfigured({
+        hookName: 'prompt.before',
+        hooks: runtimeConfig.hooks,
+        configDir: runtimeConfig.configDir,
+        payload: { renderedPrompt: rendered },
+        context: {
+          module: moduleName,
+          platform: platformKey,
+          template: runtimeConfig.templateName,
+          idea,
+        },
+      }).then((result) => String(result.renderedPrompt || rendered));
 
       console.log(
         `${logPrefix} 已组装分层 Prompt: 平台=${platformKey}, 模块=${moduleName}, 主题模板=${topicKey}`
@@ -2483,6 +2996,18 @@ export class CLIInterface {
           lengthConstraint,
           imageRatio: this.resolveCoverRatio(runtimeConfig.articleImage.ratio),
         });
+        generatedArticle = await this.runHookIfConfigured({
+          hookName: 'image.generate',
+          hooks: runtimeConfig.hooks,
+          configDir: runtimeConfig.configDir,
+          payload: { ...generatedArticle },
+          context: {
+            module: moduleName,
+            platform: platformKey,
+            template: runtimeConfig.templateName,
+            idea,
+          },
+        }) as GeneratedArticlePayload;
         generatedArticle = await this.ensureArticlePromptCompliance({
           payload: generatedArticle,
           renderedPrompt: rendered,
@@ -2521,6 +3046,19 @@ export class CLIInterface {
           platform: platformKey,
         });
       }
+
+      rendered = await this.runHookIfConfigured({
+        hookName: 'prompt.after',
+        hooks: runtimeConfig.hooks,
+        configDir: runtimeConfig.configDir,
+        payload: { renderedPrompt: rendered },
+        context: {
+          module: moduleName,
+          platform: platformKey,
+          template: runtimeConfig.templateName,
+          idea,
+        },
+      }).then((result) => String(result.renderedPrompt || rendered));
 
       const finalOutput =
         generatedArticle
@@ -2608,19 +3146,46 @@ export class CLIInterface {
     const defaultTemplateConfig = templates?.[defaultTemplate] || {};
     const hasArticleTemplate = Object.keys(articleTemplateConfig).length > 0;
     const templateConfig = hasArticleTemplate ? articleTemplateConfig : defaultTemplateConfig;
-    const prompting = (templateConfig?.ai?.prompting || {}) as Record<string, any>;
+    const globalConfig = (loadedConfig?.global && typeof loadedConfig.global === 'object')
+      ? (loadedConfig.global as Record<string, any>)
+      : {};
+    const globalPrompting = (globalConfig.prompting && typeof globalConfig.prompting === 'object')
+      ? (globalConfig.prompting as Record<string, any>)
+      : {};
+    const templatePrompting = (templateConfig?.prompting && typeof templateConfig.prompting === 'object')
+      ? (templateConfig.prompting as Record<string, any>)
+      : (templateConfig?.ai?.prompting || {}) as Record<string, any>;
+    const prompting = this.mergePromptingConfig(globalPrompting, templatePrompting);
+    const hooks = this.mergeHooks(
+      (globalConfig.hooks && typeof globalConfig.hooks === 'object') ? globalConfig.hooks : {},
+      (templateConfig?.hooks && typeof templateConfig.hooks === 'object') ? templateConfig.hooks : {}
+    );
+
+    const modulesRaw = (loadedConfig?.modules && typeof loadedConfig.modules === 'object')
+      ? (loadedConfig.modules as Record<string, any>)
+      : (globalConfig.modules && typeof globalConfig.modules === 'object')
+        ? (globalConfig.modules as Record<string, any>)
+        : (globalPrompting.modules && typeof globalPrompting.modules === 'object')
+          ? (globalPrompting.modules as Record<string, any>)
+          : (templatePrompting.modules && typeof templatePrompting.modules === 'object')
+            ? (templatePrompting.modules as Record<string, any>)
+            : {};
 
     const defaultOutputBaseDir = path.resolve(process.cwd(), '../Output/Z° North');
     const outputBaseDir = this.resolvePathFromConfig(
       configDir,
-      prompting.outputBaseDir
+      globalConfig.outputBaseDir || prompting.outputBaseDir
         || (hasArticleTemplate
           ? (templateConfig?.output?.baseDir || templateConfig?.output?.path)
           : undefined)
     ) || defaultOutputBaseDir;
 
-    const modulesBaseDir = this.resolvePathFromConfig(configDir, prompting.modulesBaseDir)
-      || outputBaseDir;
+    const moduleBaseDir = this.resolvePathFromConfig(
+      configDir,
+      globalConfig.moduleBaseDir || prompting.modulesBaseDir
+    ) || outputBaseDir;
+
+    const modulesBaseDir = moduleBaseDir;
 
     const sourcePoolsFromConfig = this.resolveSourcePools(prompting.sourcePools, configDir);
     const suggestionDirs = Array.isArray(prompting.suggestionDirs)
@@ -2637,13 +3202,13 @@ export class CLIInterface {
       configDir
     );
 
-    const modules = this.resolvePromptModules(prompting.modules, {
+    const modules = this.resolvePromptModules(modulesRaw, {
       configDir,
       modulesBaseDir,
       outputBaseDir,
     });
-    const articleAI = this.resolveArticleAIConfig(templateConfig?.ai, prompting);
-    const articleImage = this.resolveArticleImageConfig(templateConfig?.ai, prompting);
+    const articleAI = this.resolveArticleAIConfig(globalConfig.ai, templateConfig?.ai, prompting);
+    const articleImage = this.resolveArticleImageConfig(globalConfig.ai, templateConfig?.ai, prompting);
 
     return {
       configPath: configPath || undefined,
@@ -2665,6 +3230,8 @@ export class CLIInterface {
           ? prompting.baseSystemPrompt.trim()
           : '你是作者的长期写作搭档。语气像与朋友聊天：自然、真诚、具体，不装腔，不说空话。',
       outputBaseDir,
+      moduleBaseDir,
+      moduleDraftsDirName: String(globalConfig.moduleDraftsDirName || 'Drafts'),
       outputFilenameTemplate:
         typeof prompting.outputFilename === 'string' && prompting.outputFilename.trim()
           ? prompting.outputFilename.trim()
@@ -2681,12 +3248,29 @@ export class CLIInterface {
         prompting.platforms,
         configDir
       ),
+      platformImageSystemPromptFiles: this.resolvePlatformImageSystemPromptFiles(
+        prompting.platforms,
+        configDir,
+        'imageSystemPromptFile'
+      ),
+      platformImageCoverSystemPromptFiles: this.resolvePlatformImageSystemPromptFiles(
+        prompting.platforms,
+        configDir,
+        'imageCoverSystemPromptFile'
+      ),
+      platformImageInlineSystemPromptFiles: this.resolvePlatformImageSystemPromptFiles(
+        prompting.platforms,
+        configDir,
+        'imageInlineSystemPromptFile'
+      ),
       articleAI,
       articleImage,
       outputDraftsDirName:
         typeof prompting.outputDraftsDirName === 'string' && prompting.outputDraftsDirName.trim()
           ? prompting.outputDraftsDirName.trim()
-          : 'drafts',
+          : String(globalConfig.outputDraftsDirName || 'drafts'),
+      hooks,
+      templateName: hasArticleTemplate ? 'article' : defaultTemplate,
     };
   }
 
@@ -2715,6 +3299,76 @@ export class CLIInterface {
       return inputPath;
     }
     return path.resolve(configDir || process.cwd(), inputPath);
+  }
+
+  private mergeAIConfig(globalAI: unknown, templateAI: unknown): Record<string, unknown> {
+    const base = (globalAI && typeof globalAI === 'object' && !Array.isArray(globalAI))
+      ? (globalAI as Record<string, unknown>)
+      : {};
+    const override = (templateAI && typeof templateAI === 'object' && !Array.isArray(templateAI))
+      ? (templateAI as Record<string, unknown>)
+      : {};
+
+    const merged = {
+      ...base,
+      ...override,
+    } as Record<string, unknown>;
+
+    if (base.options || override.options) {
+      const baseOptions = (base.options && typeof base.options === 'object' && !Array.isArray(base.options))
+        ? (base.options as Record<string, unknown>)
+        : {};
+      const overrideOptions = (override.options && typeof override.options === 'object' && !Array.isArray(override.options))
+        ? (override.options as Record<string, unknown>)
+        : {};
+      merged.options = { ...baseOptions, ...overrideOptions };
+    }
+
+    return merged;
+  }
+
+  private mergePromptingConfig(
+    globalPrompting: Record<string, any>,
+    templatePrompting: Record<string, any>
+  ): Record<string, any> {
+    const merged = { ...globalPrompting, ...templatePrompting };
+    if (globalPrompting.platforms || templatePrompting.platforms) {
+      merged.platforms = {
+        ...(globalPrompting.platforms || {}),
+        ...(templatePrompting.platforms || {}),
+      };
+    }
+    if (globalPrompting.modules || templatePrompting.modules) {
+      merged.modules = {
+        ...(globalPrompting.modules || {}),
+        ...(templatePrompting.modules || {}),
+      };
+    }
+    if (globalPrompting.aliases || templatePrompting.aliases) {
+      merged.aliases = {
+        ...(globalPrompting.aliases || {}),
+        ...(templatePrompting.aliases || {}),
+      };
+    }
+    return merged;
+  }
+
+  private mergeHooks(
+    globalHooks: Record<string, any>,
+    templateHooks: Record<string, any>
+  ): Record<string, string> {
+    const merged: Record<string, string> = {};
+    for (const [key, value] of Object.entries(globalHooks || {})) {
+      if (typeof value === 'string' && value.trim()) {
+        merged[key] = value.trim();
+      }
+    }
+    for (const [key, value] of Object.entries(templateHooks || {})) {
+      if (typeof value === 'string' && value.trim()) {
+        merged[key] = value.trim();
+      }
+    }
+    return merged;
   }
 
   private resolveSourcePools(
@@ -2761,38 +3415,56 @@ export class CLIInterface {
       const label = typeof moduleValue.label === 'string' && moduleValue.label.trim()
         ? moduleValue.label.trim()
         : key;
-      const publishDirRaw =
-        typeof moduleValue.publishDir === 'string' && moduleValue.publishDir.trim()
-          ? moduleValue.publishDir.trim()
+      const moduleDirRaw =
+        typeof moduleValue.moduleDir === 'string' && moduleValue.moduleDir.trim()
+          ? moduleValue.moduleDir.trim()
           : label;
-      const publishDir = path.isAbsolute(publishDirRaw)
-        ? publishDirRaw
-        : path.resolve(args.outputBaseDir, publishDirRaw);
-      const promptFile = typeof moduleValue.promptFile === 'string' && moduleValue.promptFile.trim()
-        ? moduleValue.promptFile.trim()
-        : undefined;
+      const moduleDir = path.isAbsolute(moduleDirRaw)
+        ? moduleDirRaw
+        : path.resolve(args.modulesBaseDir, moduleDirRaw);
+      const promptObj = (moduleValue.prompt && typeof moduleValue.prompt === 'object' && !Array.isArray(moduleValue.prompt))
+        ? (moduleValue.prompt as Record<string, any>)
+        : null;
+      const promptFile = typeof promptObj?.file === 'string' && promptObj.file.trim()
+        ? promptObj.file.trim()
+        : (typeof moduleValue.promptFile === 'string' && moduleValue.promptFile.trim()
+          ? moduleValue.promptFile.trim()
+          : undefined);
       const coverPrompt = typeof moduleValue.coverPrompt === 'string' && moduleValue.coverPrompt.trim()
         ? moduleValue.coverPrompt.trim()
         : undefined;
+      const coverImage = (moduleValue.coverImage && typeof moduleValue.coverImage === 'object' && !Array.isArray(moduleValue.coverImage))
+        ? (moduleValue.coverImage as Record<string, unknown>)
+        : (moduleValue.image && typeof moduleValue.image === 'object' && !Array.isArray(moduleValue.image))
+          ? (moduleValue.image as Record<string, unknown>)
+          : undefined;
       const sources = Array.isArray(moduleValue.sources)
         ? moduleValue.sources
             .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
             .map((item) => this.resolvePathFromConfig(args.configDir, item) || path.resolve(args.configDir, item))
         : [];
+      const template = typeof moduleValue.template === 'string' && moduleValue.template.trim()
+        ? moduleValue.template.trim()
+        : undefined;
 
       const platformPromptFiles: Record<string, string> = {};
+      const platformSource =
+        promptObj && typeof promptObj.platforms === 'object' && !Array.isArray(promptObj.platforms)
+          ? promptObj.platforms
+          : moduleValue.platforms;
       if (
-        moduleValue.platforms &&
-        typeof moduleValue.platforms === 'object' &&
-        !Array.isArray(moduleValue.platforms)
+        platformSource &&
+        typeof platformSource === 'object' &&
+        !Array.isArray(platformSource)
       ) {
         for (const [platformKey, platformValue] of Object.entries(
-          moduleValue.platforms as Record<string, unknown>
+          platformSource as Record<string, unknown>
         )) {
           if (!platformValue || typeof platformValue !== 'object' || Array.isArray(platformValue)) {
             continue;
           }
-          const promptFileFromPlatform = (platformValue as Record<string, unknown>).promptFile;
+          const promptFileFromPlatform = (platformValue as Record<string, unknown>).promptFile
+            || (platformValue as Record<string, unknown>).file;
           if (typeof promptFileFromPlatform === 'string' && promptFileFromPlatform.trim()) {
             platformPromptFiles[platformKey] = promptFileFromPlatform.trim();
           }
@@ -2802,11 +3474,13 @@ export class CLIInterface {
       modules[key] = {
         key,
         label,
-        publishDir,
+        moduleDir,
         promptFile,
         platformPromptFiles,
         sources,
         coverPrompt,
+        template,
+        coverImage,
       };
     }
 
@@ -2869,9 +3543,41 @@ export class CLIInterface {
     return platformFiles;
   }
 
-  private resolveArticleAIConfig(templateAI: unknown, prompting: Record<string, any>): ArticleAIConfig {
-    const ai = (templateAI && typeof templateAI === 'object' && !Array.isArray(templateAI))
-      ? (templateAI as Record<string, unknown>)
+  private resolvePlatformImageSystemPromptFiles(
+    platforms: unknown,
+    configDir: string,
+    key:
+      | 'imageSystemPromptFile'
+      | 'imageCoverSystemPromptFile'
+      | 'imageInlineSystemPromptFile'
+  ): Record<string, string> {
+    const platformFiles: Record<string, string> = {};
+    if (platforms && typeof platforms === 'object' && !Array.isArray(platforms)) {
+      for (const [platformKey, platformValue] of Object.entries(platforms as Record<string, unknown>)) {
+        if (!platformValue || typeof platformValue !== 'object' || Array.isArray(platformValue)) {
+          continue;
+        }
+        const fileRaw = (platformValue as Record<string, unknown>)[key];
+        if (typeof fileRaw !== 'string' || !fileRaw.trim()) {
+          continue;
+        }
+        const resolved = this.resolvePathFromConfig(configDir, fileRaw.trim());
+        if (resolved) {
+          platformFiles[platformKey] = resolved;
+        }
+      }
+    }
+    return platformFiles;
+  }
+
+  private resolveArticleAIConfig(
+    globalAI: unknown,
+    templateAI: unknown,
+    prompting: Record<string, any>
+  ): ArticleAIConfig {
+    const mergedAI = this.mergeAIConfig(globalAI, templateAI);
+    const ai = (mergedAI && typeof mergedAI === 'object' && !Array.isArray(mergedAI))
+      ? (mergedAI as Record<string, unknown>)
       : {};
     const promptingAI = (prompting.articleAI && typeof prompting.articleAI === 'object')
       ? (prompting.articleAI as Record<string, unknown>)
@@ -2901,34 +3607,156 @@ export class CLIInterface {
     };
   }
 
-  private resolveArticleImageConfig(templateAI: unknown, prompting: Record<string, any>): ArticleImageConfig {
-    const ai = (templateAI && typeof templateAI === 'object')
+  private resolveArticleImageConfig(
+    globalAI: unknown,
+    templateAI: unknown,
+    prompting: Record<string, any>
+  ): ArticleImageConfig {
+    const globalAIConfig = (globalAI && typeof globalAI === 'object' && !Array.isArray(globalAI))
+      ? (globalAI as Record<string, unknown>)
+      : {};
+    const templateAIConfig = (templateAI && typeof templateAI === 'object' && !Array.isArray(templateAI))
       ? (templateAI as Record<string, unknown>)
       : {};
-    const templateImage = (ai.articleImage && typeof ai.articleImage === 'object')
-      ? (ai.articleImage as Record<string, unknown>)
-      : {};
+    const globalImage = (globalAIConfig.image && typeof globalAIConfig.image === 'object')
+      ? (globalAIConfig.image as Record<string, unknown>)
+      : (globalAIConfig.articleImage && typeof globalAIConfig.articleImage === 'object')
+        ? (globalAIConfig.articleImage as Record<string, unknown>)
+        : {};
+    const templateImageConfig = (templateAIConfig.articleImage && typeof templateAIConfig.articleImage === 'object')
+      ? (templateAIConfig.articleImage as Record<string, unknown>)
+      : (templateAIConfig.image && typeof templateAIConfig.image === 'object')
+        ? (templateAIConfig.image as Record<string, unknown>)
+        : {};
     const promptingImage = (prompting.articleImage && typeof prompting.articleImage === 'object')
       ? (prompting.articleImage as Record<string, unknown>)
       : {};
 
-    const enabled = (promptingImage.enabled ?? templateImage.enabled ?? false) !== false;
-    const ratioRaw = String(promptingImage.ratio || templateImage.ratio || '16:9').trim();
+    const enabled = (promptingImage.enabled ?? templateImageConfig.enabled ?? globalImage.enabled ?? false) !== false;
+    const ratioRaw = String(
+      promptingImage.ratio
+      || templateImageConfig.ratio
+      || globalImage.ratio
+      || '16:9'
+    ).trim();
     const ratio = ratioRaw === '4:3' ? '4:3' : '16:9';
 
     return {
       enabled,
       provider: 'script',
-      script: String(promptingImage.script || templateImage.script || '').trim() || undefined,
+      script: String(
+        promptingImage.script
+        || templateImageConfig.script
+        || globalImage.script
+        || ''
+      ).trim() || undefined,
       ratio,
-      outputDir: String(promptingImage.outputDir || templateImage.outputDir || '').trim() || undefined,
-      insertCoverImage: (promptingImage.insertCoverImage ?? templateImage.insertCoverImage ?? true) !== false,
-      promptDir: String(promptingImage.promptDir || templateImage.promptDir || '').trim() || undefined,
+      outputDir: String(
+        promptingImage.outputDir
+        || templateImageConfig.outputDir
+        || globalImage.outputDir
+        || ''
+      ).trim() || undefined,
+      insertCoverImage: (
+        (promptingImage.cover && typeof promptingImage.cover === 'object')
+          ? (promptingImage.cover as Record<string, unknown>).insertIntoArticle
+          : (promptingImage.insertCoverImage ?? undefined)
+      ) ?? (
+        (templateImageConfig.cover && typeof templateImageConfig.cover === 'object')
+          ? (templateImageConfig.cover as Record<string, unknown>).insertIntoArticle
+          : templateImageConfig.insertCoverImage
+      ) ?? (
+        (globalImage.cover && typeof globalImage.cover === 'object')
+          ? (globalImage.cover as Record<string, unknown>).insertIntoArticle
+          : globalImage.insertCoverImage
+      ) ?? true,
+      promptDir: String(
+        promptingImage.promptDir
+        || templateImageConfig.promptDir
+        || globalImage.promptDir
+        || ''
+      ).trim() || undefined,
       promptMap: (promptingImage.promptMap && typeof promptingImage.promptMap === 'object')
         ? (promptingImage.promptMap as Record<string, string>)
-        : (templateImage.promptMap && typeof templateImage.promptMap === 'object')
-          ? (templateImage.promptMap as Record<string, string>)
-          : undefined,
+        : (templateImageConfig.promptMap && typeof templateImageConfig.promptMap === 'object')
+          ? (templateImageConfig.promptMap as Record<string, string>)
+          : (globalImage.promptMap && typeof globalImage.promptMap === 'object')
+            ? (globalImage.promptMap as Record<string, string>)
+            : undefined,
+      usePlatformImageSystem:
+        (promptingImage.prompt && typeof promptingImage.prompt === 'object')
+          ? (
+            (promptingImage.prompt as Record<string, unknown>).usePlatformSystem
+              ?? (promptingImage.prompt as Record<string, unknown>).usePlatformImageSystem
+          ) !== false
+          : (templateImageConfig.prompt && typeof templateImageConfig.prompt === 'object')
+            ? (
+              (templateImageConfig.prompt as Record<string, unknown>).usePlatformSystem
+                ?? (templateImageConfig.prompt as Record<string, unknown>).usePlatformImageSystem
+            ) !== false
+            : (globalImage.prompt && typeof globalImage.prompt === 'object')
+              ? (
+                (globalImage.prompt as Record<string, unknown>).usePlatformSystem
+                  ?? (globalImage.prompt as Record<string, unknown>).usePlatformImageSystem
+              ) !== false
+              : true,
+      baseImage: String(
+        promptingImage.baseImage
+        || templateImageConfig.baseImage
+        || globalImage.baseImage
+        || ''
+      ).trim() || undefined,
+      input: (promptingImage.input && typeof promptingImage.input === 'object')
+        ? (promptingImage.input as Record<string, any>)
+        : (templateImageConfig.input && typeof templateImageConfig.input === 'object')
+          ? (templateImageConfig.input as Record<string, any>)
+          : (globalImage.input && typeof globalImage.input === 'object')
+            ? (globalImage.input as Record<string, any>)
+            : undefined,
+      textOverlay: (promptingImage.textOverlay && typeof promptingImage.textOverlay === 'object')
+        ? (promptingImage.textOverlay as Record<string, any>)
+        : (templateImageConfig.textOverlay && typeof templateImageConfig.textOverlay === 'object')
+          ? (templateImageConfig.textOverlay as Record<string, any>)
+          : (globalImage.textOverlay && typeof globalImage.textOverlay === 'object')
+            ? (globalImage.textOverlay as Record<string, any>)
+            : undefined,
+      coverSourceOrder: (templateCover.sourceOrder ?? templateImageConfig.coverSourceOrder ?? globalCover.sourceOrder ?? globalImage.coverSourceOrder) as any,
+      coverPromptBase: String(
+        templateCover.promptBase ?? globalCover.promptBase ?? (templateImageConfig.prompt as Record<string, unknown> | undefined)?.base ?? (globalImage.prompt as Record<string, unknown> | undefined)?.base ?? ''
+      ).trim() || undefined,
+      inlinePromptBase: String(
+        (templateImageConfig.inline && typeof templateImageConfig.inline === 'object')
+          ? (templateImageConfig.inline as Record<string, unknown>).promptBase
+          : ((templateImageConfig.prompt as Record<string, unknown> | undefined)?.inlineBase)
+        ?? ((globalImage.inline && typeof globalImage.inline === 'object')
+          ? (globalImage.inline as Record<string, unknown>).promptBase
+          : ((globalImage.prompt as Record<string, unknown> | undefined)?.inlineBase))
+        ?? ''
+      ).trim() || undefined,
+      coverRatio: String(
+        templateCover.ratio ?? templateImageConfig.coverRatio ?? globalCover.ratio ?? globalImage.coverRatio ?? ''
+      ).trim() || undefined,
+      coverAiEndpoint: String(
+        templateCover.aiEndpoint ?? templateImageConfig.coverAiEndpoint ?? globalCover.aiEndpoint ?? globalImage.coverAiEndpoint ?? ''
+      ).trim() || undefined,
+      coverAiApiKeyEnv: String(
+        templateCover.aiApiKeyEnv ?? templateImageConfig.coverAiApiKeyEnv ?? globalCover.aiApiKeyEnv ?? globalImage.coverAiApiKeyEnv ?? ''
+      ).trim() || undefined,
+      coverAiResponseUrl: String(
+        templateCover.aiResponseUrl ?? templateImageConfig.coverAiResponseUrl ?? globalCover.aiResponseUrl ?? globalImage.coverAiResponseUrl ?? ''
+      ).trim() || undefined,
+      coverAiResponseBase64: String(
+        templateCover.aiResponseBase64 ?? templateImageConfig.coverAiResponseBase64 ?? globalCover.aiResponseBase64 ?? globalImage.coverAiResponseBase64 ?? ''
+      ).trim() || undefined,
+      coverAiResponseMime: String(
+        templateCover.aiResponseMime ?? templateImageConfig.coverAiResponseMime ?? globalCover.aiResponseMime ?? globalImage.coverAiResponseMime ?? ''
+      ).trim() || undefined,
+      unsplashAccessKeyEnv: String(
+        templateCover.unsplashAccessKeyEnv ?? templateImageConfig.unsplashAccessKeyEnv ?? globalCover.unsplashAccessKeyEnv ?? globalImage.unsplashAccessKeyEnv ?? ''
+      ).trim() || undefined,
+      unsplashQuery: String(
+        templateCover.unsplashQuery ?? templateImageConfig.unsplashQuery ?? globalCover.unsplashQuery ?? globalImage.unsplashQuery ?? ''
+      ).trim() || undefined,
     };
   }
 
@@ -3267,14 +4095,14 @@ export class CLIInterface {
         candidates.push(
           path.isAbsolute(platformPrompt)
             ? platformPrompt
-            : path.resolve(args.moduleConfig.publishDir, platformPrompt)
+            : path.resolve(args.moduleConfig.moduleDir, platformPrompt)
         );
       }
       if (genericPrompt) {
         candidates.push(
           path.isAbsolute(genericPrompt)
             ? genericPrompt
-            : path.resolve(args.moduleConfig.publishDir, genericPrompt)
+            : path.resolve(args.moduleConfig.moduleDir, genericPrompt)
         );
       }
     }
@@ -3856,9 +4684,9 @@ export class CLIInterface {
       title: this.sanitizeTitleFilename(args.idea) || slug,
       timestamp,
     });
-    const publishDir = args.moduleConfig?.publishDir
-      || path.resolve(args.runtimeConfig.outputBaseDir, this.resolveModuleDirectoryName(moduleName));
-    return path.resolve(publishDir, filename);
+    const moduleDir = args.moduleConfig?.moduleDir
+      || path.resolve(args.runtimeConfig.moduleBaseDir, this.resolveModuleDirectoryName(moduleName));
+    return path.resolve(moduleDir, filename);
   }
 
   private buildDefaultArticleOutputPath(args: {
@@ -3868,9 +4696,12 @@ export class CLIInterface {
     title: string;
   }): string {
     const moduleName = args.moduleConfig?.label || args.moduleName || 'article';
-    const publishDir = args.moduleConfig?.publishDir
-      || path.resolve(args.runtimeConfig.outputBaseDir, this.resolveModuleDirectoryName(moduleName));
-    const draftsDir = path.resolve(publishDir, args.runtimeConfig.outputDraftsDirName || 'drafts');
+    const moduleDir = args.moduleConfig?.moduleDir
+      || path.resolve(args.runtimeConfig.moduleBaseDir, this.resolveModuleDirectoryName(moduleName));
+    const draftsDir = path.resolve(
+      moduleDir,
+      args.runtimeConfig.outputDraftsDirName || args.runtimeConfig.moduleDraftsDirName || 'drafts'
+    );
     const titleForFilename = this.sanitizeTitleFilename(args.title) || '未命名文章';
     return path.resolve(draftsDir, `${titleForFilename}.md`);
   }
@@ -4206,7 +5037,15 @@ export class CLIInterface {
       throw new Error('AI 生成功能已禁用。请在配置中启用 ai.enabled 或使用 --prompt-only。');
     }
 
-    const prompt = this.buildArticleGenerationPrompt(args);
+    const imageSystemPrompt = await this.resolvePlatformImageSystemPrompt({
+      runtimeConfig: args.runtimeConfig,
+      platform: args.platform,
+      kind: 'inline',
+    });
+    const prompt = this.buildArticleGenerationPrompt({
+      ...args,
+      imageSystemPrompt,
+    });
     const raw = await this.requestModelCompletion(prompt, ai);
     const parsed = this.parseGeneratedArticlePayload(raw);
 
@@ -4236,8 +5075,10 @@ export class CLIInterface {
     requirements: string;
     lengthConstraint?: LengthConstraint;
     imageRatio?: '4:3' | '16:9';
+    imageSystemPrompt?: string;
   }): string {
     const lengthConstraintLine = this.describeLengthConstraint(args.lengthConstraint);
+    const imageSystemPrompt = String(args.imageSystemPrompt || '').trim();
     return [
       args.renderedPrompt.trim(),
       '',
@@ -4253,6 +5094,7 @@ export class CLIInterface {
       `- 模块：${args.moduleName}`,
       `- 平台：${args.platform}`,
       `- 头图比例：${args.imageRatio || '4:3'}`,
+      ...(imageSystemPrompt ? [`- 平台图像系统提示词：${imageSystemPrompt}`] : []),
       `- 用户临时要求：${args.requirements || '无'}`,
       ...(lengthConstraintLine ? [`- 正文字数硬约束：${lengthConstraintLine}（仅统计 content 正文）`] : []),
       '- title 需可直接作为文件名，不要以“日期-平台-模块”开头。',
@@ -5065,35 +5907,43 @@ export class CLIInterface {
     moduleName: string;
     platform: string;
   }): Promise<GeneratedArticlePayload> {
-    const coverEnabled = args.runtimeConfig.articleImage.enabled;
+    const effectiveImageConfig = this.applyModuleImageOverrides(
+      args.runtimeConfig.articleImage,
+      args.moduleConfig?.coverImage
+    );
+    const coverEnabled = effectiveImageConfig.enabled;
     if (!coverEnabled) {
       return args.payload;
     }
 
     const ratio = this.resolveCoverRatio(
-      String(args.runtimeConfig.articleImage.ratio || '16:9')
-    );
-
-    const scriptPathRaw = args.runtimeConfig.articleImage.script;
-    if (!scriptPathRaw) {
-      console.error('❌ 缺少头图生成脚本，请在 ai.prompting.articleImage.script 配置');
-      process.exit(1);
-    }
-    const scriptPath = path.resolve(
-      args.runtimeConfig.configDir || process.cwd(),
-      scriptPathRaw
+      String(effectiveImageConfig.ratio || '16:9')
     );
 
     const moduleLabel = args.moduleConfig?.label || args.moduleName || 'article';
-    const publishDir = args.moduleConfig?.publishDir
+      const moduleDir = args.moduleConfig?.moduleDir
       || path.resolve(args.runtimeConfig.outputBaseDir, this.resolveModuleDirectoryName(moduleLabel));
-    const coverDir = args.runtimeConfig.articleImage.outputDir
-      ? path.resolve(args.runtimeConfig.configDir || process.cwd(), args.runtimeConfig.articleImage.outputDir)
-      : path.resolve(publishDir, 'images');
+    const coverDir = effectiveImageConfig.outputDir
+      ? path.resolve(args.runtimeConfig.configDir || process.cwd(), effectiveImageConfig.outputDir)
+      : path.resolve(moduleDir, 'images');
     const coverFileName = `${this.sanitizeTitleFilename(args.payload.title)}-cover-${ratio.replace(':', 'x')}.svg`;
     const coverOutput = path.resolve(coverDir, coverFileName);
 
     await fs.mkdir(path.dirname(coverOutput), { recursive: true });
+
+    const textOverlayCover = await this.tryGenerateCoverFromTextOverlay({
+      runtimeConfig: args.runtimeConfig,
+      moduleName: moduleLabel,
+      payload: args.payload,
+      outputPath: coverOutput,
+    });
+    if (textOverlayCover) {
+      return {
+        ...args.payload,
+        coverImage: textOverlayCover,
+        coverImageRatio: ratio,
+      };
+    }
 
     const coverPrompt = await this.resolveCoverPrompt({
       runtimeConfig: args.runtimeConfig,
@@ -5103,35 +5953,71 @@ export class CLIInterface {
       fallbackPrompt: args.payload.imagePromptNanobanaPro,
     });
 
-    const inputPayload = {
-      title: args.payload.title,
-      content: args.payload.content,
-      prompt: coverPrompt,
-      ratio,
-      module: moduleLabel,
-      platform: args.platform,
-      outputPath: coverOutput,
-    };
-
-    const inputFile = path.join(
-      os.tmpdir(),
-      `lyra-cover-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
-    );
-    await fs.writeFile(inputFile, JSON.stringify(inputPayload, null, 2), 'utf-8');
-
-    const result = await this.runCoverScript(scriptPath, inputFile);
-    const coverImage = result.coverImage || coverOutput;
-    try {
-      await fs.access(coverImage);
-    } catch {
-      console.warn(`[cover] 头图文件未找到: ${coverImage}`);
+    const hookCover = await this.runHookIfConfigured({
+      hookName: 'cover.generate',
+      hooks: args.runtimeConfig.hooks,
+      configDir: args.runtimeConfig.configDir,
+      payload: {
+        title: args.payload.title,
+        content: args.payload.content,
+        prompt: coverPrompt,
+        ratio,
+        outputPath: coverOutput,
+        module: moduleLabel,
+        platform: args.platform,
+      },
+      context: {
+        module: moduleLabel,
+        platform: args.platform,
+        template: 'article',
+      },
+    });
+    if (hookCover.coverImage) {
+      return {
+        ...args.payload,
+        coverImage: String(hookCover.coverImage),
+        coverImageRatio: ratio,
+      };
     }
 
-    return {
-      ...args.payload,
-      coverImage,
-      coverImageRatio: ratio,
+    const normalizedInput = this.normalizeImageInput(
+      effectiveImageConfig.input,
+      args.runtimeConfig.configDir,
+      args.runtimeConfig.outputBaseDir,
+      { content: args.payload.content, title: args.payload.title }
+    );
+
+    const autoConfig: Record<string, any> = {
+      title: args.payload.title,
+      cover_prompt: coverPrompt,
+      cover_ratio: ratio,
+      cover_source_order: effectiveImageConfig.coverSourceOrder || ['ai', 'unsplash', 'placeholder'],
+      cover_input: normalizedInput,
+      cover_mode: this.inferImageMode(normalizedInput),
+      cover_ai_endpoint: effectiveImageConfig.coverAiEndpoint,
+      cover_ai_api_key_env: effectiveImageConfig.coverAiApiKeyEnv,
+      cover_ai_response_url: effectiveImageConfig.coverAiResponseUrl,
+      cover_ai_response_base64: effectiveImageConfig.coverAiResponseBase64,
+      cover_ai_response_mime: effectiveImageConfig.coverAiResponseMime,
+      unsplash_access_key_env: effectiveImageConfig.unsplashAccessKeyEnv,
+      unsplash_query: effectiveImageConfig.unsplashQuery,
+      cover_script: effectiveImageConfig.script,
     };
+
+    const coverResult = await this.resolveAutoCoverSource({
+      config: autoConfig,
+      html: args.payload.content,
+      configDir: args.runtimeConfig.configDir,
+    });
+    if (coverResult) {
+      return {
+        ...args.payload,
+        coverImage: coverResult.value,
+        coverImageRatio: ratio,
+      };
+    }
+
+    return args.payload;
   }
 
   private async resolveCoverPrompt(args: {
@@ -5141,8 +6027,47 @@ export class CLIInterface {
     platform: string;
     fallbackPrompt: string;
   }): Promise<string> {
+    const coverBase = String(args.runtimeConfig.articleImage.coverPromptBase || '').trim();
+    const coverPromptFile = (args.moduleConfig?.coverImage && typeof args.moduleConfig.coverImage === 'object')
+      ? (args.moduleConfig.coverImage as Record<string, any>).promptFile
+      : undefined;
+    if (coverPromptFile || (args.moduleConfig as any)?.coverPromptFile) {
+      const rawPath = String(coverPromptFile || (args.moduleConfig as any)?.coverPromptFile || '').trim();
+      const resolved = path.isAbsolute(rawPath)
+        ? rawPath
+        : (
+          args.moduleConfig?.moduleDir
+            ? path.resolve(args.moduleConfig.moduleDir, rawPath)
+            : (this.resolvePathFromConfig(args.runtimeConfig.configDir, rawPath) || rawPath)
+        );
+      if (resolved && await this.fileExists(resolved)) {
+        const content = (await fs.readFile(resolved, 'utf-8')).trim();
+        if (content) {
+          const userPrompt = coverBase ? `${coverBase}\n\n${content}` : content;
+          return this.composeImagePrompt({
+            systemPrompt: await this.resolvePlatformImageSystemPrompt({
+              runtimeConfig: args.runtimeConfig,
+              platform: args.platform,
+              kind: 'cover',
+            }),
+            userPrompt,
+          });
+        }
+      } else {
+        console.warn(`[cover] coverPromptFile 未找到: ${resolved}`);
+      }
+    }
     if (args.moduleConfig?.coverPrompt) {
-      return String(args.moduleConfig.coverPrompt).trim() || args.fallbackPrompt;
+      const raw = String(args.moduleConfig.coverPrompt).trim() || args.fallbackPrompt;
+      const userPrompt = coverBase ? `${coverBase}\n\n${raw}` : raw;
+      return this.composeImagePrompt({
+        systemPrompt: await this.resolvePlatformImageSystemPrompt({
+          runtimeConfig: args.runtimeConfig,
+          platform: args.platform,
+          kind: 'cover',
+        }),
+        userPrompt,
+      });
     }
 
     const moduleKey = args.moduleConfig?.key || args.moduleName;
@@ -5156,11 +6081,32 @@ export class CLIInterface {
         || path.resolve(process.cwd(), promptDirRaw);
       promptDirs.push(resolved);
     }
-    if (args.moduleConfig?.publishDir) {
-      promptDirs.push(args.moduleConfig.publishDir);
+    const moduleCoverPromptDir = (args.moduleConfig?.coverImage && typeof args.moduleConfig.coverImage === 'object')
+      ? (args.moduleConfig.coverImage as Record<string, any>).promptDir
+      : undefined;
+    if (moduleCoverPromptDir && String(moduleCoverPromptDir).trim()) {
+      const raw = String(moduleCoverPromptDir).trim();
+      const resolved = path.isAbsolute(raw)
+        ? raw
+        : (args.moduleConfig?.moduleDir
+          ? path.resolve(args.moduleConfig.moduleDir, raw)
+          : (this.resolvePathFromConfig(args.runtimeConfig.configDir, raw)));
+      if (resolved) {
+        promptDirs.push(resolved);
+      }
+    }
+    if (args.moduleConfig?.moduleDir) {
+      promptDirs.push(args.moduleConfig.moduleDir);
     }
     if (promptDirs.length === 0) {
-      return args.fallbackPrompt;
+      return this.composeImagePrompt({
+        systemPrompt: await this.resolvePlatformImageSystemPrompt({
+          runtimeConfig: args.runtimeConfig,
+          platform: args.platform,
+          kind: 'cover',
+        }),
+        userPrompt: args.fallbackPrompt,
+      });
     }
 
     const candidates = [
@@ -5181,13 +6127,333 @@ export class CLIInterface {
         if (await this.fileExists(filePath)) {
           const content = (await fs.readFile(filePath, 'utf-8')).trim();
           if (content) {
-            return content;
+            const userPrompt = coverBase ? `${coverBase}\n\n${content}` : content;
+            return this.composeImagePrompt({
+              systemPrompt: await this.resolvePlatformImageSystemPrompt({
+                runtimeConfig: args.runtimeConfig,
+                platform: args.platform,
+                kind: 'cover',
+              }),
+              userPrompt,
+            });
           }
         }
       }
     }
 
-    return args.fallbackPrompt;
+    const fallback = coverBase ? `${coverBase}\n\n${args.fallbackPrompt}` : args.fallbackPrompt;
+    return this.composeImagePrompt({
+      systemPrompt: await this.resolvePlatformImageSystemPrompt({
+        runtimeConfig: args.runtimeConfig,
+        platform: args.platform,
+        kind: 'cover',
+      }),
+      userPrompt: fallback,
+    });
+  }
+
+  private async resolvePlatformImageSystemPrompt(args: {
+    runtimeConfig: ResolvedPromptRuntimeConfig;
+    platform: string;
+    kind: 'cover' | 'inline';
+  }): Promise<string> {
+    if (args.runtimeConfig.articleImage.usePlatformImageSystem === false) {
+      return '';
+    }
+    const platform = String(args.platform || '').trim().toLowerCase();
+    const resolvedPlatform = platform || 'wechat';
+    const coverMap = args.runtimeConfig.platformImageCoverSystemPromptFiles || {};
+    const inlineMap = args.runtimeConfig.platformImageInlineSystemPromptFiles || {};
+    const genericMap = args.runtimeConfig.platformImageSystemPromptFiles || {};
+    const pick =
+      (args.kind === 'cover' ? coverMap[resolvedPlatform] : inlineMap[resolvedPlatform])
+      || genericMap[resolvedPlatform];
+    if (pick && (await this.fileExists(pick))) {
+      const content = (await fs.readFile(pick, 'utf-8')).trim();
+      if (content) {
+        return content;
+      }
+    }
+    return this.getBuiltInPlatformImagePrompt(resolvedPlatform, args.kind);
+  }
+
+  private getBuiltInPlatformImagePrompt(
+    platform: string,
+    kind: 'cover' | 'inline'
+  ): string {
+    const normalized = String(platform || '').trim().toLowerCase();
+    const baseCover =
+      '视觉风格：干净、克制、留白；避免复杂纹理与高噪点；画面主体清晰、对比适中；不出现文字、水印、logo。';
+    const baseInline =
+      '视觉风格：辅助阅读，画面清晰，色彩不过饱和；避免密集细节与文字元素；不出现水印、logo。';
+    if (normalized === 'zhihu') {
+      return kind === 'cover'
+        ? '视觉风格：简洁、理性、信息密度适中；主体清晰，构图稳重；不出现文字、水印、logo。'
+        : '视觉风格：支持论证与阅读理解，画面简洁；避免花哨装饰与文字元素；不出现水印、logo。';
+    }
+    if (normalized === 'wechat' || normalized === 'wx') {
+      return kind === 'cover'
+        ? '视觉风格：移动端友好、留白、清晰；主体突出、背景干净；不出现文字、水印、logo。'
+        : '视觉风格：配合微信阅读节奏，简洁清爽；避免复杂背景与文字元素；不出现水印、logo。';
+    }
+    return kind === 'cover' ? baseCover : baseInline;
+  }
+
+  private composeImagePrompt(args: {
+    systemPrompt?: string;
+    userPrompt?: string;
+  }): string {
+    const system = String(args.systemPrompt || '').trim();
+    const user = String(args.userPrompt || '').trim();
+    if (system && user) {
+      return `${system}\n\n${user}`;
+    }
+    return user || system || '';
+  }
+
+  private inferImageMode(input?: {
+    image?: string;
+    mask?: string;
+    editText?: string;
+    prompt?: string;
+  }): 'text' | 'image' | 'text+image' | 'edit' {
+    const image = String(input?.image || '').trim();
+    const mask = String(input?.mask || '').trim();
+    const editText = String(input?.editText || '').trim();
+    const prompt = String(input?.prompt || '').trim();
+    if (mask || editText) {
+      return 'edit';
+    }
+    if (image && prompt) {
+      return 'text+image';
+    }
+    if (image) {
+      return 'image';
+    }
+    return 'text';
+  }
+
+  private normalizeImageInput(
+    input: Record<string, any> | undefined,
+    configDir?: string,
+    baseDir?: string,
+    context?: { content?: string; title?: string }
+  ): Record<string, any> | undefined {
+    if (!input || typeof input !== 'object') {
+      return undefined;
+    }
+    const normalized: Record<string, any> = { ...input };
+    const resolvePath = (raw: string): string => {
+      if (!raw) return raw;
+      if (path.isAbsolute(raw)) return raw;
+      if (raw.startsWith('.')) {
+        return this.resolvePathFromConfig(configDir, raw) || raw;
+      }
+      if (baseDir) {
+        return path.resolve(baseDir, raw);
+      }
+      return this.resolvePathFromConfig(configDir, raw) || raw;
+    };
+    if (normalized.image) {
+      normalized.image = resolvePath(String(normalized.image));
+    }
+    if (normalized.mask) {
+      normalized.mask = resolvePath(String(normalized.mask));
+    }
+    if (normalized.editText && context) {
+      const issueNumber = this.resolveIssueNumberFromContent(context.content || '', context.title || '');
+      normalized.editText = this.renderTemplate(String(normalized.editText), {
+        issueNumber,
+      });
+      if (String(normalized.editText).includes('{{issueNumber}}')) {
+        console.warn('[image] 未能解析 issueNumber，将保留占位符');
+      }
+    }
+    return normalized;
+  }
+
+  private async tryGenerateCoverFromTextOverlay(args: {
+    runtimeConfig: ResolvedPromptRuntimeConfig;
+    moduleName: string;
+    payload: GeneratedArticlePayload;
+    outputPath: string;
+  }): Promise<string | null> {
+    const overlay = args.runtimeConfig.articleImage.textOverlay;
+    if (!overlay) {
+      return null;
+    }
+    const baseImageRaw = args.runtimeConfig.articleImage.baseImage;
+    if (!baseImageRaw) {
+      return null;
+    }
+    const baseImage = this.resolvePathFromConfig(args.runtimeConfig.configDir, baseImageRaw) || baseImageRaw;
+    try {
+      await fs.access(baseImage);
+    } catch {
+      console.warn(`[cover] baseImage not found: ${baseImage}`);
+      return null;
+    }
+
+    const text = this.resolveTextOverlayText({
+      overlay,
+      title: args.payload.title,
+      moduleName: args.moduleName,
+    });
+    if (!text) {
+      return null;
+    }
+
+    const sharpModule = await import('sharp');
+    const sharp = (sharpModule as any).default || sharpModule;
+    const meta = await sharp(baseImage).metadata();
+    const width = meta.width || 1600;
+    const height = meta.height || 900;
+    const font = overlay.font || 'Arial';
+    const size = Number(overlay.size || 64);
+    const x = Number(overlay.x ?? 80);
+    const y = Number(overlay.y ?? 160);
+    const color = overlay.color || '#ffffff';
+
+    const svg = [
+      `<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${width}\" height=\"${height}\">`,
+      `<style>text { font-family: ${font}; font-size: ${size}px; fill: ${color}; }</style>`,
+      `<text x=\"${x}\" y=\"${y}\">${this.escapeXml(text)}</text>`,
+      `</svg>`,
+    ].join('');
+
+    await sharp(baseImage)
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .toFile(args.outputPath);
+    return args.outputPath;
+  }
+
+  private async runHookIfConfigured(args: {
+    hookName: string;
+    hooks: Record<string, string> | undefined;
+    configDir?: string;
+    payload: Record<string, any>;
+    context?: Record<string, any>;
+  }): Promise<Record<string, any>> {
+    const hookPath = args.hooks?.[args.hookName];
+    if (!hookPath) {
+      return args.payload;
+    }
+    const resolved = this.resolvePathFromConfig(args.configDir, hookPath) || path.resolve(process.cwd(), hookPath);
+    try {
+      const inputFile = path.join(
+        os.tmpdir(),
+        `lyra-hook-${args.hookName}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+      );
+      const inputPayload = {
+        context: args.context || {},
+        payload: args.payload,
+      };
+      await fs.writeFile(inputFile, JSON.stringify(inputPayload, null, 2), 'utf-8');
+      const result = await this.runHookScript(resolved, inputFile);
+      if (result && typeof result === 'object') {
+        if ((result as any).payload && typeof (result as any).payload === 'object') {
+          return (result as any).payload as Record<string, any>;
+        }
+        return result as Record<string, any>;
+      }
+      return args.payload;
+    } catch (error) {
+      console.warn(`[hook] ${args.hookName} 执行失败: ${error instanceof Error ? error.message : String(error)}`);
+      return args.payload;
+    }
+  }
+
+  private async runHookScript(scriptPath: string, inputFile: string): Promise<Record<string, any>> {
+    try {
+      await fs.access(scriptPath);
+    } catch {
+      throw new Error(`hook 脚本不存在: ${scriptPath}`);
+    }
+    const ext = path.extname(scriptPath).toLowerCase();
+    let command = scriptPath;
+    let args = ['--input', inputFile];
+    if (ext === '.py') {
+      command = 'python3';
+      args = [scriptPath, '--input', inputFile];
+    } else if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
+      command = 'node';
+      args = [scriptPath, '--input', inputFile];
+    }
+    const output = await this.spawnAndCollect(command, args);
+    const trimmed = output.trim();
+    if (!trimmed) {
+      return {};
+    }
+    return JSON.parse(trimmed);
+  }
+
+  private resolveTextOverlayText(args: {
+    overlay: NonNullable<ArticleImageConfig['textOverlay']>;
+    title: string;
+    moduleName: string;
+  }): string {
+    if (args.overlay.textTemplate) {
+      return this.renderTemplate(args.overlay.textTemplate, {
+        title: args.title,
+        module: args.moduleName,
+      });
+    }
+    let base = args.overlay.selector === 'module' ? args.moduleName : args.title;
+    if (args.overlay.replace?.pattern) {
+      try {
+        const re = new RegExp(args.overlay.replace.pattern);
+        base = base.replace(re, args.overlay.replace.with || '');
+      } catch {
+        // ignore invalid regex
+      }
+    }
+    return String(base || '').trim();
+  }
+
+  private renderTemplate(template: string, vars: Record<string, string>): string {
+    return String(template || '').replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_m, key) => {
+      return vars[key] || '';
+    });
+  }
+
+  private escapeXml(input: string): string {
+    return String(input || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  private resolveIssueNumberFromContent(content: string, title: string): string {
+    const raw = String(content || '').trim();
+    const normalized = raw.includes('\\n') && !raw.includes('\n')
+      ? raw.replace(/\\n/g, '\n')
+      : raw;
+    if (normalized.startsWith('---')) {
+      try {
+        const parsed = matter(normalized);
+        const issue = parsed?.data?.issueNumber;
+        if (issue !== undefined && issue !== null && String(issue).trim()) {
+          return String(issue).trim();
+        }
+      } catch {
+        // ignore
+      }
+      const fmMatch = normalized.match(/issueNumber\\s*:\\s*(\\d{1,4})/i);
+      if (fmMatch?.[1]) {
+        return fmMatch[1];
+      }
+    }
+    const htmlMatch = normalized.match(/ISSUE\\s*#?\\s*(\\d{1,4})/i);
+    if (htmlMatch?.[1]) {
+      return htmlMatch[1];
+    }
+    const titleMatch = String(title || '').match(/#\\s*(\\d{1,4})/);
+    if (titleMatch?.[1]) {
+      return titleMatch[1];
+    }
+    return '';
   }
 
   private async runCoverScript(scriptPath: string, inputFile: string): Promise<Record<string, any>> {

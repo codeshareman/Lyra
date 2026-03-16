@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schema.lyra.dev/lyra.schema.json",
+  "title": "Lyra Config",
+  "description": "Lyra CLI 配置文件（.lyrarc.json）",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "全局配置",
+      "additionalProperties": true,
+      "properties": {
+        "logLevel": { "type": "string", "description": "日志级别（info | warn | error | debug）" },
+        "defaultTemplate": { "type": "string", "description": "默认模板名称（weekly / article）" },
+        "outputBaseDir": { "type": "string", "description": "输出根目录（如 ./Output/Z° North）" },
+        "moduleBaseDir": { "type": "string", "description": "模块基路径（默认与 outputBaseDir 相同）" },
+        "moduleDraftsDirName": { "type": "string", "description": "模块草稿子目录名称（如 Drafts）" },
+        "hooks": {
+          "type": "object",
+          "description": "Hook 脚本映射（key 为 hookName，value 为脚本路径）",
+          "properties": {
+            "prompt.before": { "type": "string", "description": "Prompt 生成前执行" },
+            "prompt.after": { "type": "string", "description": "Prompt 生成后执行" },
+            "image.generate": { "type": "string", "description": "生成图片前/中执行（自定义接管）" },
+            "cover.generate": { "type": "string", "description": "生成封面图前/中执行（自定义接管）" },
+            "publish.before": { "type": "string", "description": "发布前执行" },
+            "publish.after": { "type": "string", "description": "发布后执行" }
+          },
+          "additionalProperties": false
+        },
+        "ai": { "$ref": "#/definitions/aiConfig" }
+      }
+    },
+    "templates": {
+      "type": "object",
+      "description": "模板配置（仅允许 weekly / article）",
+      "properties": {
+        "weekly": { "$ref": "#/definitions/templateConfig", "description": "周刊模板配置" },
+        "article": { "$ref": "#/definitions/templateConfig", "description": "文章模板配置" }
+      },
+      "additionalProperties": false
+    },
+    "modules": {
+      "type": "object",
+      "description": "模块配置（key 为模块唯一标识）",
+      "properties": {
+        "weekly": { "$ref": "#/definitions/moduleConfig", "description": "周刊模块" },
+        "life": { "$ref": "#/definitions/moduleConfig", "description": "生活志模块" },
+        "audiovisual": { "$ref": "#/definitions/moduleConfig", "description": "声图志模块" },
+        "tech": { "$ref": "#/definitions/moduleConfig", "description": "技术笔记模块" },
+        "movie": { "$ref": "#/definitions/moduleConfig", "description": "观影志模块" },
+        "food": { "$ref": "#/definitions/moduleConfig", "description": "觅食记模块" },
+        "sports": { "$ref": "#/definitions/moduleConfig", "description": "运动志模块" },
+        "series": { "$ref": "#/definitions/moduleConfig", "description": "专题产品模块" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definitions": {
+    "aiConfig": {
+      "type": "object",
+      "description": "AI 服务配置（可被模板/模块覆盖）",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否启用 AI" },
+        "provider": { "type": "string", "description": "AI Provider 标识（如 local / openai / google）" },
+        "model": { "type": "string", "description": "模型名称或标识" },
+        "baseUrl": { "type": "string", "description": "Provider Base URL" },
+        "apiKey": { "type": "string", "description": "API Key（或留空走环境变量）" },
+        "timeout": { "type": "number", "description": "请求超时（毫秒）" },
+        "maxRetries": { "type": "number", "description": "最大重试次数" },
+        "maxTokens": { "type": "number", "description": "最大输出 Token" },
+        "temperature": { "type": "number", "description": "生成温度" },
+        "options": { "type": "object", "additionalProperties": true, "description": "Provider 额外参数透传" },
+        "image": { "$ref": "#/definitions/imageConfig" }
+      }
+    },
+    "imageConfig": {
+      "type": "object",
+      "description": "图片生成全局配置",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否启用图片生成" },
+        "ratio": { "type": "string", "description": "默认图片比例（如 16:9 / 4:3）" },
+        "outputDir": { "type": "string", "description": "图片输出目录（可选）" },
+        "promptDir": { "type": "string", "description": "全局 prompt 搜索目录（可选）" },
+        "promptMap": { "type": "object", "additionalProperties": { "type": "string" }, "description": "模块 key -> prompt 文件名映射" },
+        "prompt": { "$ref": "#/definitions/imagePromptConfig" },
+        "input": { "$ref": "#/definitions/imageInputConfig" },
+        "textOverlay": { "$ref": "#/definitions/textOverlayConfig" },
+        "cover": { "$ref": "#/definitions/coverConfig" },
+        "inline": { "$ref": "#/definitions/inlineConfig" }
+      }
+    },
+    "imagePromptConfig": {
+      "type": "object",
+      "description": "图片 Prompt 组合规则",
+      "additionalProperties": true,
+      "properties": {
+        "usePlatformSystem": { "type": "boolean", "description": "是否拼接平台级系统提示词" }
+      }
+    },
+    "coverConfig": {
+      "type": "object",
+      "description": "封面图生成配置",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否生成封面图" },
+        "insertIntoArticle": { "type": "boolean", "description": "是否插入到文章正文" },
+        "ratio": { "type": "string", "description": "封面比例（默认继承 image.ratio）" },
+        "sourceOrder": {
+          "type": "array",
+          "description": "封面来源降级顺序",
+          "items": { "type": "string", "enum": ["ai", "unsplash", "script", "placeholder"] }
+        },
+        "promptBase": { "type": "string", "description": "封面基础提示词（风格基调）" },
+        "aiEndpoint": { "type": "string", "description": "封面 AI 生成接口地址（可选）" },
+        "aiApiKeyEnv": { "type": "string", "description": "封面 AI 接口 Key 环境变量名（可选）" },
+        "aiResponseUrl": { "type": "string", "description": "AI 响应中图片 URL 字段路径" },
+        "aiResponseBase64": { "type": "string", "description": "AI 响应中 base64 字段路径" },
+        "aiResponseMime": { "type": "string", "description": "AI 响应中 mime 字段路径" },
+        "unsplashAccessKeyEnv": { "type": "string", "description": "Unsplash Access Key 环境变量名" },
+        "unsplashQuery": { "type": "string", "description": "Unsplash 查询关键词" }
+      }
+    },
+    "inlineConfig": {
+      "type": "object",
+      "description": "正文插图配置",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否生成正文插图" },
+        "maxBodyImages": { "type": "number", "description": "正文最多插图数量" },
+        "maxPerModule": { "type": "number", "description": "每个模块最多插图数量" },
+        "promptBase": { "type": "string", "description": "插图基础提示词（风格基调）" }
+      }
+    },
+    "imageInputConfig": {
+      "type": "object",
+      "description": "文生图/图生图输入",
+      "additionalProperties": true,
+      "properties": {
+        "image": { "type": "string", "description": "参考图片路径/URL" },
+        "mask": { "type": "string", "description": "编辑区域 mask 路径/URL（可选）" },
+        "editText": { "type": "string", "description": "编辑指令文本（可含 {{issueNumber}}）" },
+        "prompt": { "type": "string", "description": "额外补充 prompt" }
+      }
+    },
+    "textOverlayConfig": {
+      "type": "object",
+      "description": "封面文字叠加配置",
+      "additionalProperties": true,
+      "properties": {
+        "textTemplate": { "type": "string", "description": "覆盖文字模板（支持 {{title}} / {{module}}）" },
+        "selector": { "type": "string", "description": "文字来源：title | module" },
+        "font": { "type": "string", "description": "字体名称" },
+        "size": { "type": "number", "description": "字体大小" },
+        "x": { "type": "number", "description": "X 坐标" },
+        "y": { "type": "number", "description": "Y 坐标" },
+        "color": { "type": "string", "description": "文字颜色" },
+        "replace": {
+          "type": "object",
+          "description": "文字替换规则",
+          "properties": {
+            "pattern": { "type": "string", "description": "替换匹配表达式" },
+            "with": { "type": "string", "description": "替换为" }
+          }
+        }
+      }
+    },
+    "templateConfig": {
+      "type": "object",
+      "description": "模板配置",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否启用模板" },
+        "templateVersion": { "type": "string", "description": "模板版本（如 enhanced）" },
+        "branding": { "type": "object", "additionalProperties": true, "description": "品牌信息" },
+        "visual": { "type": "object", "additionalProperties": true, "description": "视觉相关配置" },
+        "template": {
+          "type": "object",
+          "description": "模板文件",
+          "properties": {
+            "path": { "type": "string", "description": "模板文件路径" }
+          }
+        },
+        "sources": { "type": "object", "additionalProperties": true, "description": "内容来源定义" },
+        "output": {
+          "type": "object",
+          "description": "输出配置",
+          "additionalProperties": true,
+          "properties": {
+            "path": { "type": "string", "description": "输出目录" },
+            "filename": { "type": "string", "description": "输出文件名模板" }
+          }
+        },
+        "content": { "type": "object", "additionalProperties": true, "description": "内容筛选/聚合规则" },
+        "modules": { "type": "object", "additionalProperties": true, "description": "模板内模块配置（weekly 等）" },
+        "export": { "type": "object", "additionalProperties": true, "description": "导出配置" },
+        "ai": { "type": "object", "additionalProperties": true, "description": "模板级 AI 配置" },
+        "hooks": {
+          "type": "object",
+          "description": "模板级 hooks（与 global.hooks 合并）",
+          "properties": {
+            "prompt.before": { "type": "string", "description": "Prompt 生成前执行" },
+            "prompt.after": { "type": "string", "description": "Prompt 生成后执行" },
+            "image.generate": { "type": "string", "description": "生成图片前/中执行（自定义接管）" },
+            "cover.generate": { "type": "string", "description": "生成封面图前/中执行（自定义接管）" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "moduleConfig": {
+      "type": "object",
+      "description": "模块配置",
+      "additionalProperties": true,
+      "properties": {
+        "label": { "type": "string", "description": "模块名称" },
+        "moduleDir": { "type": "string", "description": "模块目录（相对 moduleBaseDir）" },
+        "outputDir": { "type": "string", "description": "输出目录（相对 moduleBaseDir）" },
+        "template": { "type": "string", "description": "关联模板名称（默认 article）" },
+        "promptFile": { "type": "string", "description": "模块默认提示词文件（相对 moduleDir）" },
+        "platforms": { "type": "object", "additionalProperties": true, "description": "平台级 prompt 配置" },
+        "sources": { "type": "array", "items": { "type": "string" }, "description": "模块内容来源" },
+        "coverImage": {
+          "type": "object",
+          "description": "模块封面配置",
+          "additionalProperties": true,
+          "properties": {
+            "promptFile": { "type": "string", "description": "封面提示词文件（相对 moduleDir）" },
+            "promptDir": { "type": "string", "description": "封面 prompt 目录（可选）" },
+            "promptBase": { "type": "string", "description": "封面基础提示词（模块级）" },
+            "input": { "$ref": "#/definitions/imageInputConfig" },
+            "textOverlay": { "$ref": "#/definitions/textOverlayConfig" },
+            "ratio": { "type": "string", "description": "封面比例（模块级）" },
+            "sourceOrder": {
+              "type": "array",
+              "description": "封面来源降级顺序（模块级）",
+              "items": { "type": "string", "enum": ["ai", "unsplash", "script", "placeholder"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

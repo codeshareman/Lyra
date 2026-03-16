@@ -262,7 +262,7 @@ title: 刻意练习复盘
                   modules: {
                     life: {
                       label: '生活志',
-                      publishDir: 'Z°N 生活志',
+                      moduleDir: 'Z°N 生活志',
                     },
                   },
                   aliases: {
@@ -333,7 +333,7 @@ title: 刻意练习复盘
                   modules: {
                     life: {
                       label: '生活志',
-                      publishDir: 'Z°N 生活志',
+                      moduleDir: 'Z°N 生活志',
                     },
                   },
                   aliases: {
@@ -458,6 +458,46 @@ title: 刻意练习复盘
     expect(markdown).not.toContain('## Nanobana Pro 生图提示词');
   });
 
+  it('生成文章 Prompt 时应包含平台图像系统提示词', () => {
+    const prompt = (cli as any).buildArticleGenerationPrompt({
+      renderedPrompt: 'TEST PROMPT',
+      idea: 'idea',
+      moduleName: '生活志',
+      platform: 'wechat',
+      requirements: '',
+      imageRatio: '16:9',
+      imageSystemPrompt: 'SYS-IMAGE',
+    });
+
+    expect(prompt).toContain('平台图像系统提示词：SYS-IMAGE');
+  });
+
+  it('应自动推断图像生成模式', () => {
+    expect((cli as any).inferImageMode({ mask: 'm.png' })).toBe('edit');
+    expect((cli as any).inferImageMode({ editText: 'edit' })).toBe('edit');
+    expect((cli as any).inferImageMode({ image: 'a.png', prompt: 'p' })).toBe('text+image');
+    expect((cli as any).inferImageMode({ image: 'a.png' })).toBe('image');
+    expect((cli as any).inferImageMode({})).toBe('text');
+  });
+
+  it('editText 应支持 issueNumber 模板替换', () => {
+    const input = (cli as any).normalizeImageInput(
+      { editText: 'Issue #{{issueNumber}}' },
+      undefined,
+      { content: '---\\nissueNumber: 12\\n---\\n\\nBody', title: '' }
+    );
+    expect(input.editText).toBe('Issue #12');
+  });
+
+  it('textOverlay 模板应渲染变量', () => {
+    const text = (cli as any).resolveTextOverlayText({
+      overlay: { textTemplate: 'Weekly #{{issue}} - {{title}}' },
+      title: '标题',
+      moduleName: '模块',
+    });
+    expect(text).toBe('Weekly # - 标题');
+  });
+
   it('应优先使用模块 coverPrompt 作为头图提示词', async () => {
     const moduleDir = path.join(tempDir, 'Z°N 声图志');
     await fs.mkdir(moduleDir, { recursive: true });
@@ -474,7 +514,7 @@ title: 刻意练习复盘
     const moduleConfig = {
       key: 'audiovisual',
       label: '声图志',
-      publishDir: moduleDir,
+      moduleDir: moduleDir,
       promptFile: 'prompt.md',
       platformPromptFiles: {},
       sources: [],
@@ -490,6 +530,47 @@ title: 刻意练习复盘
     });
 
     expect(prompt).toContain('声图志头图提示词');
+  });
+
+  it('应拼接平台图像系统提示词到头图提示词', async () => {
+    const moduleDir = path.join(tempDir, 'Z°N 生活志');
+    await fs.mkdir(moduleDir, { recursive: true });
+
+    const coverSystemPath = path.join(tempDir, 'wechat.image.cover.md');
+    await fs.writeFile(coverSystemPath, 'SYS-COVER', 'utf-8');
+
+    const runtimeConfig = {
+      configDir: tempDir,
+      platformImageCoverSystemPromptFiles: { wechat: coverSystemPath },
+      platformImageSystemPromptFiles: {},
+      platformImageInlineSystemPromptFiles: {},
+      articleImage: {
+        enabled: true,
+        ratio: '16:9',
+        insertCoverImage: true,
+        usePlatformImageSystem: true,
+      },
+    } as any;
+
+    const moduleConfig = {
+      key: 'life',
+      label: '生活志',
+      moduleDir: moduleDir,
+      promptFile: 'prompt.md',
+      platformPromptFiles: {},
+      sources: [],
+      coverPrompt: 'USER-COVER',
+    } as any;
+
+    const prompt = await (cli as any).resolveCoverPrompt({
+      runtimeConfig,
+      moduleConfig,
+      moduleName: '生活志',
+      platform: 'wechat',
+      fallbackPrompt: 'fallback',
+    });
+
+    expect(prompt).toBe('SYS-COVER\n\nUSER-COVER');
   });
 
   it('应从模块目录读取 cover.prompt.wechat.md', async () => {
@@ -509,7 +590,7 @@ title: 刻意练习复盘
     const moduleConfig = {
       key: 'life',
       label: '生活志',
-      publishDir: moduleDir,
+      moduleDir: moduleDir,
       promptFile: 'prompt.md',
       platformPromptFiles: {},
       sources: [],
