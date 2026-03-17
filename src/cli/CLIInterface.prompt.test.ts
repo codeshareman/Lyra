@@ -484,6 +484,7 @@ title: 刻意练习复盘
     const input = (cli as any).normalizeImageInput(
       { editText: 'Issue #{{issueNumber}}' },
       undefined,
+      undefined,
       { content: '---\\nissueNumber: 12\\n---\\n\\nBody', title: '' }
     );
     expect(input.editText).toBe('Issue #12');

@@ -4,9 +4,11 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import matter from 'gray-matter';
-import { IContentGenerator, ITemplateRegistry } from '../types/interfaces';
+import { IContentGenerator, ITemplateRegistry, ExportFormat } from '../types/interfaces';
 import { Scheduler } from '../core/Scheduler';
 import { ConfigManager } from '../core/ConfigManager';
+import { PlatformExporter } from '../export/PlatformExporter';
+import { DEFAULT_WECHAT_THEME } from '../constants/wechatThemes';
 
 interface PromptProfile {
   description?: string;
@@ -76,6 +78,7 @@ interface ResolvedPromptRuntimeConfig {
   outputDraftsDirName: string;
   hooks: Record<string, string>;
   templateName: string;
+  templateExport?: Record<string, any>;
 }
 
 interface PromptWizardResult {
@@ -952,13 +955,6 @@ export class CLIInterface {
     const moduleKey = rawModule ? this.resolveModuleKey(runtimeConfig, rawModule) : null;
     const moduleConfig = moduleKey ? runtimeConfig.modules[moduleKey] : undefined;
     const moduleLabel = moduleConfig?.label || moduleKey || rawModule;
-
-    const templateCover = (templateImageConfig.cover && typeof templateImageConfig.cover === 'object')
-      ? (templateImageConfig.cover as Record<string, unknown>)
-      : {};
-    const globalCover = (globalImage.cover && typeof globalImage.cover === 'object')
-      ? (globalImage.cover as Record<string, unknown>)
-      : {};
 
     return {
       rawModule: rawModule || undefined,
@@ -3096,6 +3092,13 @@ export class CLIInterface {
           await fs.mkdir(path.dirname(outPath), { recursive: true });
           await fs.writeFile(outPath, `${finalOutput}\n`, 'utf-8');
           console.log(`${logPrefix} 已写入: ${outPath}`);
+          if (generatedArticle) {
+            await this.writeArticleExports({
+              markdownPath: outPath,
+              markdownContent: finalOutput,
+              exportConfig: runtimeConfig.templateExport,
+            });
+          }
         }
       }
 
@@ -3271,7 +3274,75 @@ export class CLIInterface {
           : String(globalConfig.outputDraftsDirName || 'drafts'),
       hooks,
       templateName: hasArticleTemplate ? 'article' : defaultTemplate,
+      templateExport: (templateConfig && typeof templateConfig.export === 'object')
+        ? (templateConfig.export as Record<string, any>)
+        : undefined,
     };
+  }
+
+  private resolveExportFormats(exportConfig: Record<string, any> | undefined): ExportFormat[] {
+    const rawFormats = exportConfig?.formats;
+    const supportedFormats: ExportFormat[] = ['markdown', 'html', 'wechat'];
+    if (!Array.isArray(rawFormats) || rawFormats.length === 0) {
+      return ['markdown'];
+    }
+    const normalized = rawFormats.filter((format: unknown): format is ExportFormat =>
+      supportedFormats.includes(format as ExportFormat)
+    );
+    return normalized.length > 0 ? Array.from(new Set(normalized)) : ['markdown'];
+  }
+
+  private getExportFilePath(markdownPath: string, format: ExportFormat): string {
+    const extension = path.extname(markdownPath);
+    const basePath = extension ? markdownPath.slice(0, -extension.length) : markdownPath;
+    if (format === 'html') return `${basePath}.html`;
+    if (format === 'wechat') return `${basePath}.wechat.html`;
+    return markdownPath;
+  }
+
+  private async writeArticleExports(args: {
+    markdownPath: string;
+    markdownContent: string;
+    exportConfig?: Record<string, any>;
+  }): Promise<void> {
+    const exportFormats = this.resolveExportFormats(args.exportConfig).filter(
+      (format) => format !== 'markdown'
+    );
+    if (exportFormats.length === 0) {
+      return;
+    }
+
+    const exporter = new PlatformExporter();
+    const wechatConfig = (args.exportConfig?.wechat && typeof args.exportConfig.wechat === 'object')
+      ? (args.exportConfig.wechat as Record<string, any>)
+      : {};
+    const backgroundPreset = wechatConfig.backgroundPreset || 'plain';
+    const validateWechatImages = wechatConfig.validateImages ?? true;
+    const wechatTheme = wechatConfig.theme || DEFAULT_WECHAT_THEME;
+    const imageProxyUrl = wechatConfig.imageProxyUrl;
+    const inaccessibleImageDomains = wechatConfig.inaccessibleImageDomains;
+    const imageOptimization = wechatConfig.imageOptimization;
+
+    for (const format of exportFormats) {
+      const exportResult = await exporter.export(args.markdownContent, format, {
+        includeStyles: true,
+        backgroundImage: undefined,
+        backgroundPreset: format === 'wechat' ? backgroundPreset : undefined,
+        wechatTheme: format === 'wechat' ? wechatTheme : undefined,
+        validateImages: format === 'wechat' ? validateWechatImages : false,
+        imageProxyUrl: format === 'wechat' ? imageProxyUrl : undefined,
+        inaccessibleImageDomains: format === 'wechat' ? inaccessibleImageDomains : undefined,
+        imageOptimization: format === 'wechat' ? imageOptimization : undefined,
+      });
+
+      const exportPath = this.getExportFilePath(args.markdownPath, format);
+      const normalizedContent = exportResult.content.replace(/\r\n/g, '\n');
+      await fs.writeFile(exportPath, normalizedContent, { encoding: 'utf-8' });
+
+      if (exportResult.warnings.length > 0) {
+        exportResult.warnings.forEach((warning) => console.warn(`[${format}] ${warning}`));
+      }
+    }
   }
 
   private async loadRawConfigForPrompting(configPath: string): Promise<Record<string, unknown> | null> {
@@ -3640,6 +3711,14 @@ export class CLIInterface {
       || '16:9'
     ).trim();
     const ratio = ratioRaw === '4:3' ? '4:3' : '16:9';
+    const templateCover = (templateImageConfig.cover && typeof templateImageConfig.cover === 'object')
+      ? (templateImageConfig.cover as Record<string, unknown>)
+      : {};
+    const globalCover = (globalImage.cover && typeof globalImage.cover === 'object')
+      ? (globalImage.cover as Record<string, unknown>)
+      : {};
+    const pickBool = (value: unknown): boolean | undefined =>
+      typeof value === 'boolean' ? value : undefined;
 
     return {
       enabled,
@@ -3659,16 +3738,16 @@ export class CLIInterface {
       ).trim() || undefined,
       insertCoverImage: (
         (promptingImage.cover && typeof promptingImage.cover === 'object')
-          ? (promptingImage.cover as Record<string, unknown>).insertIntoArticle
-          : (promptingImage.insertCoverImage ?? undefined)
+          ? pickBool((promptingImage.cover as Record<string, unknown>).insertIntoArticle)
+          : pickBool(promptingImage.insertCoverImage)
       ) ?? (
         (templateImageConfig.cover && typeof templateImageConfig.cover === 'object')
-          ? (templateImageConfig.cover as Record<string, unknown>).insertIntoArticle
-          : templateImageConfig.insertCoverImage
+          ? pickBool((templateImageConfig.cover as Record<string, unknown>).insertIntoArticle)
+          : pickBool(templateImageConfig.insertCoverImage)
       ) ?? (
         (globalImage.cover && typeof globalImage.cover === 'object')
-          ? (globalImage.cover as Record<string, unknown>).insertIntoArticle
-          : globalImage.insertCoverImage
+          ? pickBool((globalImage.cover as Record<string, unknown>).insertIntoArticle)
+          : pickBool(globalImage.insertCoverImage)
       ) ?? true,
       promptDir: String(
         promptingImage.promptDir
@@ -3720,9 +3799,9 @@ export class CLIInterface {
           : (globalImage.textOverlay && typeof globalImage.textOverlay === 'object')
             ? (globalImage.textOverlay as Record<string, any>)
             : undefined,
-      coverSourceOrder: (templateCover.sourceOrder ?? templateImageConfig.coverSourceOrder ?? globalCover.sourceOrder ?? globalImage.coverSourceOrder) as any,
+      coverSourceOrder: ((templateCover as any).sourceOrder ?? templateImageConfig.coverSourceOrder ?? (globalCover as any).sourceOrder ?? globalImage.coverSourceOrder) as any,
       coverPromptBase: String(
-        templateCover.promptBase ?? globalCover.promptBase ?? (templateImageConfig.prompt as Record<string, unknown> | undefined)?.base ?? (globalImage.prompt as Record<string, unknown> | undefined)?.base ?? ''
+        (templateCover as any).promptBase ?? (globalCover as any).promptBase ?? (templateImageConfig.prompt as Record<string, unknown> | undefined)?.base ?? (globalImage.prompt as Record<string, unknown> | undefined)?.base ?? ''
       ).trim() || undefined,
       inlinePromptBase: String(
         (templateImageConfig.inline && typeof templateImageConfig.inline === 'object')
@@ -3734,28 +3813,28 @@ export class CLIInterface {
         ?? ''
       ).trim() || undefined,
       coverRatio: String(
-        templateCover.ratio ?? templateImageConfig.coverRatio ?? globalCover.ratio ?? globalImage.coverRatio ?? ''
+        (templateCover as any).ratio ?? templateImageConfig.coverRatio ?? (globalCover as any).ratio ?? globalImage.coverRatio ?? ''
       ).trim() || undefined,
       coverAiEndpoint: String(
-        templateCover.aiEndpoint ?? templateImageConfig.coverAiEndpoint ?? globalCover.aiEndpoint ?? globalImage.coverAiEndpoint ?? ''
+        (templateCover as any).aiEndpoint ?? templateImageConfig.coverAiEndpoint ?? (globalCover as any).aiEndpoint ?? globalImage.coverAiEndpoint ?? ''
       ).trim() || undefined,
       coverAiApiKeyEnv: String(
-        templateCover.aiApiKeyEnv ?? templateImageConfig.coverAiApiKeyEnv ?? globalCover.aiApiKeyEnv ?? globalImage.coverAiApiKeyEnv ?? ''
+        (templateCover as any).aiApiKeyEnv ?? templateImageConfig.coverAiApiKeyEnv ?? (globalCover as any).aiApiKeyEnv ?? globalImage.coverAiApiKeyEnv ?? ''
       ).trim() || undefined,
       coverAiResponseUrl: String(
-        templateCover.aiResponseUrl ?? templateImageConfig.coverAiResponseUrl ?? globalCover.aiResponseUrl ?? globalImage.coverAiResponseUrl ?? ''
+        (templateCover as any).aiResponseUrl ?? templateImageConfig.coverAiResponseUrl ?? (globalCover as any).aiResponseUrl ?? globalImage.coverAiResponseUrl ?? ''
       ).trim() || undefined,
       coverAiResponseBase64: String(
-        templateCover.aiResponseBase64 ?? templateImageConfig.coverAiResponseBase64 ?? globalCover.aiResponseBase64 ?? globalImage.coverAiResponseBase64 ?? ''
+        (templateCover as any).aiResponseBase64 ?? templateImageConfig.coverAiResponseBase64 ?? (globalCover as any).aiResponseBase64 ?? globalImage.coverAiResponseBase64 ?? ''
       ).trim() || undefined,
       coverAiResponseMime: String(
-        templateCover.aiResponseMime ?? templateImageConfig.coverAiResponseMime ?? globalCover.aiResponseMime ?? globalImage.coverAiResponseMime ?? ''
+        (templateCover as any).aiResponseMime ?? templateImageConfig.coverAiResponseMime ?? (globalCover as any).aiResponseMime ?? globalImage.coverAiResponseMime ?? ''
       ).trim() || undefined,
       unsplashAccessKeyEnv: String(
-        templateCover.unsplashAccessKeyEnv ?? templateImageConfig.unsplashAccessKeyEnv ?? globalCover.unsplashAccessKeyEnv ?? globalImage.unsplashAccessKeyEnv ?? ''
+        (templateCover as any).unsplashAccessKeyEnv ?? templateImageConfig.unsplashAccessKeyEnv ?? (globalCover as any).unsplashAccessKeyEnv ?? globalImage.unsplashAccessKeyEnv ?? ''
       ).trim() || undefined,
       unsplashQuery: String(
-        templateCover.unsplashQuery ?? templateImageConfig.unsplashQuery ?? globalCover.unsplashQuery ?? globalImage.unsplashQuery ?? ''
+        (templateCover as any).unsplashQuery ?? templateImageConfig.unsplashQuery ?? (globalCover as any).unsplashQuery ?? globalImage.unsplashQuery ?? ''
       ).trim() || undefined,
     };
   }

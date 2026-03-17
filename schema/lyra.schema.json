@@ -221,7 +221,15 @@
         "outputDir": { "type": "string", "description": "输出目录（相对 moduleBaseDir）" },
         "template": { "type": "string", "description": "关联模板名称（默认 article）" },
         "promptFile": { "type": "string", "description": "模块默认提示词文件（相对 moduleDir）" },
-        "platforms": { "type": "object", "additionalProperties": true, "description": "平台级 prompt 配置" },
+        "platforms": {
+          "type": "object",
+          "description": "平台级 prompt 配置",
+          "properties": {
+            "wechat": { "$ref": "#/definitions/platformPromptConfig" },
+            "zhihu": { "$ref": "#/definitions/platformPromptConfig" }
+          },
+          "additionalProperties": false
+        },
         "sources": { "type": "array", "items": { "type": "string" }, "description": "模块内容来源" },
         "coverImage": {
           "type": "object",
@@ -241,6 +249,14 @@
             }
           }
         }
+      }
+    },
+    "platformPromptConfig": {
+      "type": "object",
+      "description": "平台级 prompt 配置",
+      "additionalProperties": false,
+      "properties": {
+        "promptFile": { "type": "string", "description": "平台提示词文件（相对 moduleDir）" }
       }
     }
   }
