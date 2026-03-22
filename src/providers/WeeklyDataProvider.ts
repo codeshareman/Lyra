@@ -435,6 +435,7 @@ export class WeeklyDataProvider implements IDataProvider {
     if (this.config.branding?.title) {
       metadata.brandTitle = this.config.branding.title;
     }
+    metadata.showReferenceLinks = this.resolveReferenceLinksSetting(this.config);
 
     return {
       metadata,
@@ -606,6 +607,7 @@ export class WeeklyDataProvider implements IDataProvider {
     if (this.config.branding?.title) {
       metadata.brandTitle = this.config.branding.title;
     }
+    metadata.showReferenceLinks = this.resolveReferenceLinksSetting(enhancedConfig);
 
     return {
       metadata,
@@ -674,6 +676,23 @@ export class WeeklyDataProvider implements IDataProvider {
       valid: errors.length === 0,
       errors,
     };
+  }
+
+  private resolveReferenceLinksSetting(config: TemplateConfig): boolean {
+    const exportConfig = (config as any)?.export;
+    if (typeof exportConfig === 'boolean') {
+      return exportConfig;
+    }
+    const referenceLinks = exportConfig?.referenceLinks;
+    if (typeof referenceLinks === 'boolean') {
+      return referenceLinks;
+    }
+    if (referenceLinks && typeof referenceLinks === 'object') {
+      if (typeof referenceLinks.enabled === 'boolean') {
+        return referenceLinks.enabled;
+      }
+    }
+    return true;
   }
 
   private isEnhancedConfig(config: TemplateConfig): boolean {
@@ -2221,7 +2240,7 @@ export class WeeklyDataProvider implements IDataProvider {
       return null;
     }
 
-    const providerRaw = String(aiConfig.provider).toLowerCase();
+    const providerRaw = String(aiConfig.provider || process.env.AI_PROVIDER || '').toLowerCase();
     const provider = providerRaw === 'google' ? 'gemini' : providerRaw;
     const supported = ['local', 'openai', 'anthropic', 'gemini'];
     if (!supported.includes(provider)) {
@@ -2229,15 +2248,12 @@ export class WeeklyDataProvider implements IDataProvider {
       return null;
     }
 
-    const apiKey = this.resolveAIKey(
-      provider,
-      typeof aiConfig.apiKey === 'string' ? aiConfig.apiKey : undefined
-    );
+    const apiKey = this.resolveAIKey(provider);
 
     const providerConfig: AIProviderConfig = {
       provider: provider as AIProviderConfig['provider'],
-      model: typeof aiConfig.model === 'string' ? aiConfig.model : undefined,
-      baseUrl: typeof aiConfig.baseUrl === 'string' ? aiConfig.baseUrl : undefined,
+      model: typeof aiConfig.model === 'string' ? aiConfig.model : process.env.AI_MODEL,
+      baseUrl: typeof aiConfig.baseUrl === 'string' ? aiConfig.baseUrl : process.env.AI_BASE_URL,
       apiKey,
       timeout: typeof aiConfig.timeout === 'number' ? aiConfig.timeout : undefined,
       maxRetries:
@@ -2337,37 +2353,11 @@ export class WeeklyDataProvider implements IDataProvider {
     return sliced.trim();
   }
 
-  private resolveAIKey(provider: string, apiKey?: string): string | undefined {
-    const resolved = this.resolveEnvValue(apiKey);
-    if (resolved) {
-      return resolved;
+  private resolveAIKey(provider: string): string | undefined {
+    if (process.env.AI_API_KEY) {
+      return process.env.AI_API_KEY;
     }
-
-    if (provider === 'openai') {
-      return process.env.OPENAI_API_KEY;
-    }
-    if (provider === 'anthropic') {
-      return process.env.ANTHROPIC_API_KEY;
-    }
-    if (provider === 'gemini') {
-      return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-    }
-
     return undefined;
-  }
-
-  private resolveEnvValue(value?: string): string | undefined {
-    const input = String(value || '').trim();
-    if (!input) {
-      return undefined;
-    }
-
-    const match = input.match(/^\$\{([A-Z0-9_]+)\}$/);
-    if (!match) {
-      return input;
-    }
-
-    return process.env[match[1]] || '';
   }
 
   private async syncRecommendationFlagsFromHistory(

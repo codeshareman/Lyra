@@ -101,10 +101,41 @@ Common options:
 
 Provider notes:
 
-- `openai`: requires `OPENAI_API_KEY`
-- `anthropic`: requires `ANTHROPIC_API_KEY`
-- `gemini`: requires `GEMINI_API_KEY` (or `GOOGLE_API_KEY`)
-- `local`: uses local model endpoint
+- All providers use a unified `AI_API_KEY` from `.env`
+- Use `AI_BASE_URL` to switch providers (OpenAI-compatible), e.g. OpenRouter or LiteLLM
+- `AI_MODEL` controls the model name
+
+Example `.env`:
+```text
+AI_API_KEY=your_key
+AI_BASE_URL=https://openrouter.ai/api/v1
+AI_MODEL=openai/gpt-4o-mini
+```
+
+Example LiteLLM:
+```text
+AI_API_KEY=your_key
+AI_BASE_URL=http://localhost:4000/v1
+AI_MODEL=gpt-4o-mini
+```
+
+Unsplash (cover fallback):
+```text
+UNSPLASH_ACCESS_KEY=your_unsplash_key
+```
+
+Reference links:
+```json
+{
+  "templates": {
+    "weekly": {
+      "export": {
+        "referenceLinks": { "enabled": true }
+      }
+    }
+  }
+}
+```
 
 ## Configuration Discovery
 
@@ -171,6 +202,7 @@ For frequent publishing, increment at least `PATCH` for every release.
 
 - Prefer dedicated `wechat.publish.json` / `zhihu.publish.json` files
 - Publish config should only include platform publish fields (AI follows `.lyrarc.json`)
+- Secrets (e.g. `WECHAT_ACCESS_TOKEN`, `AI_API_KEY`) should live in `.env` (auto-loaded). Use `--env` for custom env files. See `.env.example`.
 
 ```json
 {

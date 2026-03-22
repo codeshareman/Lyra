@@ -1,9 +1,11 @@
 import { Command } from 'commander';
 import { spawn } from 'child_process';
+import * as fsSync from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import matter from 'gray-matter';
+import dotenv from 'dotenv';
 import { IContentGenerator, ITemplateRegistry, ExportFormat } from '../types/interfaces';
 import { Scheduler } from '../core/Scheduler';
 import { ConfigManager } from '../core/ConfigManager';
@@ -210,6 +212,7 @@ export class CLIInterface {
   private contentGenerator: IContentGenerator;
   private templateRegistry: ITemplateRegistry;
   private scheduler?: Scheduler;
+  private envLoaded = false;
 
   constructor(
     contentGenerator: IContentGenerator,
@@ -218,6 +221,7 @@ export class CLIInterface {
     this.program = new Command();
     this.contentGenerator = contentGenerator;
     this.templateRegistry = templateRegistry;
+    this.ensureEnvLoaded();
   }
 
   /**
@@ -369,7 +373,6 @@ export class CLIInterface {
       .option('--min-tags <number>', '每篇最少 tags 数量（默认: 1）', '1')
       .option('--provider <name>', 'AI provider: openai|anthropic|gemini|local')
       .option('--model <name>', 'AI 模型名称')
-      .option('--api-key <key>', 'AI API Key（可用环境变量）')
       .option('--base-url <url>', 'AI Base URL')
       .option('--timeout <ms>', 'AI 请求超时毫秒')
       .option('--max-retries <number>', 'AI 最大重试次数')
@@ -394,7 +397,7 @@ export class CLIInterface {
 
     // 全局错误处理
     this.program.exitOverride();
-    
+
     // 改进帮助信息显示
     this.program.configureHelp({
       sortSubcommands: true,
@@ -407,7 +410,7 @@ export class CLIInterface {
    */
   private addTemplateCommands(): void {
     const templates = this.templateRegistry.listTemplates();
-    
+
     templates.forEach(template => {
       this.program
         .command(template.name)
@@ -482,9 +485,9 @@ export class CLIInterface {
           resolve();
         }).catch((error) => {
           // 处理commander的退出错误
-          if (error.code === 'commander.help' || 
-              error.code === 'commander.version' || 
-              error.code === 'commander.helpDisplayed') {
+          if (error.code === 'commander.help' ||
+            error.code === 'commander.version' ||
+            error.code === 'commander.helpDisplayed') {
             resolve();
           } else {
             reject(error);
@@ -618,25 +621,25 @@ export class CLIInterface {
       } else {
         console.error('\n❌ 生成失败!');
         console.error(`错误: ${result.message}`);
-        
+
         // 提供解决建议
         if (result.message.includes('配置')) {
           console.log('\n💡 建议: 检查配置文件是否正确');
         } else if (result.message.includes('模板')) {
           console.log('\n💡 建议: 检查模板文件是否存在');
         }
-        
+
         process.exit(1);
       }
     } catch (error) {
       console.error('\n❌ 生成过程中发生异常:');
       console.error(error instanceof Error ? error.message : String(error));
-      
+
       if (options.verbose && error instanceof Error && error.stack) {
         console.error('\n🔍 详细错误信息:');
         console.error(error.stack);
       }
-      
+
       process.exit(1);
     }
   }
@@ -703,10 +706,10 @@ export class CLIInterface {
     );
     const rawModule = String(
       options.module
-        || publishConfig?.publish?.wechat?.module
-        || publishConfig?.publish?.module
-        || publishConfig?.module
-        || ''
+      || publishConfig?.publish?.wechat?.module
+      || publishConfig?.publish?.module
+      || publishConfig?.module
+      || ''
     ).trim();
     const moduleContext = await this.resolvePublishModuleContext({
       lyraConfigPath,
@@ -944,8 +947,7 @@ export class CLIInterface {
       loadedConfig = await manager.load(args.lyraConfigPath);
     } catch (error) {
       console.warn(
-        `[publish] 读取模块配置失败，已跳过模块关联: ${
-          error instanceof Error ? error.message : String(error)
+        `[publish] 读取模块配置失败，已跳过模块关联: ${error instanceof Error ? error.message : String(error)
         }`
       );
       return { rawModule: args.rawModule };
@@ -966,27 +968,23 @@ export class CLIInterface {
     };
   }
 
+  private ensureEnvLoaded(): void {
+    if (this.envLoaded) return;
+    this.envLoaded = true;
+    const cwd = process.cwd();
+    const candidates = [path.join(cwd, '.env'), path.join(cwd, '.env.local')];
+    for (const filePath of candidates) {
+      if (fsSync.existsSync(filePath)) {
+        dotenv.config({ path: filePath, override: false });
+      }
+    }
+  }
+
   private loadEnvFile(filePath?: string): void {
-    if (!filePath) {
-      return;
-    }
-    try {
-      const raw = require('fs').readFileSync(filePath, 'utf-8');
-      raw.split(/\r?\n/).forEach((line: string) => {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) return;
-        const normalized = trimmed.startsWith('export ') ? trimmed.slice(7) : trimmed;
-        const idx = normalized.indexOf('=');
-        if (idx === -1) return;
-        const key = normalized.slice(0, idx).trim();
-        const value = normalized.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '');
-        if (key && !process.env[key]) {
-          process.env[key] = value;
-        }
-      });
-    } catch {
-      // ignore missing env file
-    }
+    if (!filePath) return;
+    const resolved = path.resolve(filePath);
+    if (!fsSync.existsSync(resolved)) return;
+    dotenv.config({ path: resolved, override: false });
   }
 
   private async runPublishApiFlow(args: {
@@ -1410,8 +1408,8 @@ export class CLIInterface {
       const cleaned = raw
         .map((item) => String(item || '').trim().toLowerCase())
         .filter((item) => item === 'ai' || item === 'unsplash' || item === 'script' || item === 'placeholder') as Array<
-        'ai' | 'unsplash' | 'script' | 'placeholder'
-      >;
+          'ai' | 'unsplash' | 'script' | 'placeholder'
+        >;
       if (cleaned.length > 0) {
         return cleaned;
       }
@@ -1472,11 +1470,8 @@ export class CLIInterface {
     const endpoint = String(config.cover_ai_endpoint || config.coverAiEndpoint || '').trim();
     if (!endpoint) return null;
 
-    const apiKey = String(
-      config.cover_ai_api_key
-      || process.env[String(config.cover_ai_api_key_env || config.coverAiApiKeyEnv || '')]
-      || ''
-    ).trim();
+    const apiKeyEnvName = String(config.cover_ai_api_key_env || config.coverAiApiKeyEnv || '').trim();
+    const apiKey = apiKeyEnvName ? String(process.env[apiKeyEnvName] || '').trim() : '';
     const ratio = String(config.cover_ratio || '16:9');
     const payload = {
       title: config.title,
@@ -1567,9 +1562,12 @@ export class CLIInterface {
   private async tryFetchCoverFromUnsplash(
     config: Record<string, any>
   ): Promise<{ type: 'url'; value: string } | null> {
+    const envKeyName = String(config.unsplash_access_key_env || '').trim();
     const accessKey = String(
       config.unsplash_access_key
-      || process.env[String(config.unsplash_access_key_env || '')]
+      || (envKeyName ? process.env[envKeyName] : undefined)
+      || process.env.UNSPLASH_ACCESS_KEY
+      || process.env.IMAGE_UNSPLASH_ACCESS_KEY
       || ''
     ).trim();
     const query = String(config.unsplash_query || config.cover_unsplash_query || config.title || '').trim();
@@ -1812,10 +1810,10 @@ export class CLIInterface {
   private async handleInit(options: any): Promise<void> {
     try {
       const configPath = '.lyrarc.json';
-      
+
       // 检查配置文件是否已存在
       const configExists = await this.fileExists(configPath);
-      
+
       if (configExists && !options.force) {
         console.log('⚠️  配置文件已存在');
         console.log('💡 使用 --force 参数强制覆盖');
@@ -1863,7 +1861,7 @@ export class CLIInterface {
       };
 
       await fs.writeFile(configPath, JSON.stringify(defaultConfig, null, 2), 'utf-8');
-      
+
       console.log('✅ 配置文件创建成功!');
       console.log(`📄 文件位置: ${configPath}`);
       console.log(`🎯 默认模板: ${options.template}`);
@@ -1871,7 +1869,7 @@ export class CLIInterface {
       console.log('  1. 根据需要修改配置文件');
       console.log('  2. 准备数据源目录');
       console.log(`  3. 运行 'lyra ${options.template}' 生成内容`);
-      
+
     } catch (error) {
       console.error('❌ 创建配置文件失败:');
       console.error(error instanceof Error ? error.message : String(error));
@@ -1885,7 +1883,7 @@ export class CLIInterface {
   private async handleConfig(options: any): Promise<void> {
     try {
       const configPath = await this.findConfigFile();
-      
+
       if (!configPath) {
         console.log('❌ 未找到配置文件');
         console.log('💡 使用 \'lyra init\' 创建配置文件');
@@ -1903,7 +1901,7 @@ export class CLIInterface {
         const configManager = new ConfigManager();
         const config = await configManager.load(configPath);
         const validation = configManager.validate(config);
-        
+
         if (validation.valid) {
           console.log('✅ 配置文件验证通过');
         } else {
@@ -1950,7 +1948,7 @@ export class CLIInterface {
 
       // 添加调度任务
       let taskCount = 0;
-      const tasks: Array<{template: string, cron: string, nextRun?: Date}> = [];
+      const tasks: Array<{ template: string, cron: string, nextRun?: Date }> = [];
 
       for (const [templateType, templateConfig] of Object.entries(config.templates)) {
         if (templateConfig.schedule?.enabled && templateConfig.schedule.cron) {
@@ -1964,7 +1962,7 @@ export class CLIInterface {
               }
             );
           }
-          
+
           const nextRun = options.dryRun ? null : this.scheduler.getNextRunTime(templateType);
           tasks.push({
             template: templateType,
@@ -2032,7 +2030,7 @@ export class CLIInterface {
         console.log('🔄 调度器正在后台运行...');
         console.log('💡 按 Ctrl+C 停止');
         // 保持进程运行
-        setInterval(() => {}, 1000);
+        setInterval(() => { }, 1000);
       } else {
         console.log('🔄 调度器正在运行...');
         console.log('💡 按 Ctrl+C 停止');
@@ -2438,7 +2436,9 @@ export class CLIInterface {
   }
 
   private resolveTagAIConfig(options: any): ArticleAIConfig {
-    const providerRaw = String(options.provider || process.env.LYRA_TAG_AI_PROVIDER || 'local')
+    const providerRaw = String(
+      options.provider || process.env.LYRA_TAG_AI_PROVIDER || process.env.AI_PROVIDER || 'local'
+    )
       .trim()
       .toLowerCase();
     const provider = (providerRaw === 'openai' || providerRaw === 'anthropic' || providerRaw === 'gemini' || providerRaw === 'google' || providerRaw === 'local')
@@ -2453,32 +2453,30 @@ export class CLIInterface {
           ? 'gemini-1.5-flash'
           : 'llama3.1';
 
-    const envApiKey = provider === 'openai'
-      ? process.env.OPENAI_API_KEY
-      : provider === 'anthropic'
-        ? process.env.ANTHROPIC_API_KEY
-        : provider === 'gemini'
-          ? (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)
-          : process.env.LOCAL_MODEL_API_KEY;
-
-    const apiKeyRaw = String(options.apiKey || envApiKey || '').trim();
-    const apiKey = apiKeyRaw ? this.resolveEnvValue(apiKeyRaw) : '';
+    const apiKey = String(this.resolveProviderApiKey(provider) || '').trim();
 
     if ((provider === 'openai' || provider === 'anthropic' || provider === 'gemini') && !apiKey) {
-      throw new Error(provider + ' provider 缺少 apiKey（可通过 --api-key 或环境变量提供）');
+      throw new Error(provider + ' provider 缺少 apiKey（请使用环境变量或 .env 提供）');
     }
 
     return {
       enabled: true,
       provider,
-      model: String(options.model || defaultModel).trim() || defaultModel,
+      model: String(options.model || process.env.AI_MODEL || defaultModel).trim() || defaultModel,
       apiKey: apiKey || undefined,
-      baseUrl: String(options.baseUrl || '').trim() || undefined,
+      baseUrl: String(options.baseUrl || process.env.AI_BASE_URL || '').trim() || undefined,
       timeout: this.parsePositiveInt(options.timeout, 60000),
       maxRetries: this.parsePositiveInt(options.maxRetries, 2),
       temperature: 0.3,
       maxTokens: 300,
     };
+  }
+
+  private resolveProviderApiKey(provider: string): string | undefined {
+    if (process.env.AI_API_KEY) {
+      return process.env.AI_API_KEY;
+    }
+    return undefined;
   }
 
   private async generateTagsWithAI(args: {
@@ -2742,10 +2740,10 @@ export class CLIInterface {
 
       let moduleRaw = String(
         options.module
-          || options.topic
-          || runtimeConfig.defaultModule
-          || runtimeConfig.defaultTopic
-          || ''
+        || options.topic
+        || runtimeConfig.defaultModule
+        || runtimeConfig.defaultTopic
+        || ''
       ).trim();
       let moduleKey = this.resolveModuleKey(runtimeConfig, moduleRaw || undefined);
       const moduleConfigByCli = moduleKey ? runtimeConfig.modules[moduleKey] : undefined;
@@ -3063,9 +3061,9 @@ export class CLIInterface {
       const finalOutput =
         generatedArticle
           ? this.formatGeneratedArticleMarkdown(generatedArticle, {
-              moduleName: moduleLabel || moduleName || '生活志',
-              insertCoverImage: runtimeConfig.articleImage.insertCoverImage !== false,
-            })
+            moduleName: moduleLabel || moduleName || '生活志',
+            insertCoverImage: runtimeConfig.articleImage.insertCoverImage !== false,
+          })
           : rendered;
 
       if (!outputPath && entryMode === 'article') {
@@ -3138,8 +3136,7 @@ export class CLIInterface {
       }
     } catch (error) {
       console.warn(
-        `[article] 读取配置失败，尝试以原始配置继续: ${
-          error instanceof Error ? error.message : String(error)
+        `[article] 读取配置失败，尝试以原始配置继续: ${error instanceof Error ? error.message : String(error)
         }`
       );
       if (configPath) {
@@ -3182,9 +3179,9 @@ export class CLIInterface {
     const outputBaseDir = this.resolvePathFromConfig(
       configDir,
       globalConfig.outputBaseDir || prompting.outputBaseDir
-        || (hasArticleTemplate
-          ? (templateConfig?.output?.baseDir || templateConfig?.output?.path)
-          : undefined)
+      || (hasArticleTemplate
+        ? (templateConfig?.output?.baseDir || templateConfig?.output?.path)
+        : undefined)
     ) || defaultOutputBaseDir;
 
     const moduleBaseDir = this.resolvePathFromConfig(
@@ -3197,8 +3194,8 @@ export class CLIInterface {
     const sourcePoolsFromConfig = this.resolveSourcePools(prompting.sourcePools, configDir);
     const suggestionDirs = Array.isArray(prompting.suggestionDirs)
       ? prompting.suggestionDirs
-          .filter((item) => typeof item === 'string' && item.trim())
-          .map((item) => this.resolvePathFromConfig(configDir, item) || path.resolve(process.cwd(), item))
+        .filter((item) => typeof item === 'string' && item.trim())
+        .map((item) => this.resolvePathFromConfig(configDir, item) || path.resolve(process.cwd(), item))
       : sourcePoolsFromConfig;
     const finalSuggestionDirs = suggestionDirs.length > 0
       ? suggestionDirs
@@ -3247,8 +3244,8 @@ export class CLIInterface {
             typeof templateConfig?.output?.filename === 'string' &&
             templateConfig.output.filename.trim()
           )
-          ? templateConfig.output.filename.trim()
-          : '{{date}}-{{platform}}-{{module}}-{{slug}}.md',
+            ? templateConfig.output.filename.trim()
+            : '{{date}}-{{platform}}-{{module}}-{{slug}}.md',
       moduleAliases: this.resolveModuleAliases(prompting.aliases, modules),
       modules,
       platformSystemPromptFiles: this.resolvePlatformSystemPromptFiles(
@@ -3515,8 +3512,8 @@ export class CLIInterface {
           : undefined;
       const sources = Array.isArray(moduleValue.sources)
         ? moduleValue.sources
-            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-            .map((item) => this.resolvePathFromConfig(args.configDir, item) || path.resolve(args.configDir, item))
+          .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          .map((item) => this.resolvePathFromConfig(args.configDir, item) || path.resolve(args.configDir, item))
         : [];
       const template = typeof moduleValue.template === 'string' && moduleValue.template.trim()
         ? moduleValue.template.trim()
@@ -3659,22 +3656,20 @@ export class CLIInterface {
       : {};
 
     const providerRaw = String(
-      promptingAI.provider || ai.provider || 'local'
+      promptingAI.provider || ai.provider || process.env.AI_PROVIDER || 'local'
     ).trim().toLowerCase();
     const provider = (providerRaw === 'openai' || providerRaw === 'anthropic' || providerRaw === 'gemini' || providerRaw === 'google' || providerRaw === 'local')
       ? (providerRaw === 'google' ? 'gemini' : providerRaw)
       : 'local';
 
-    const apiKey = this.resolveEnvValue(
-      String(promptingAI.apiKey || ai.apiKey || '').trim()
-    );
+    const apiKey = this.resolveProviderApiKey(provider);
 
     return {
       enabled: (promptingAI.enabled ?? ai.enabled ?? true) !== false,
       provider,
-      model: String(promptingAI.model || ai.model || '').trim() || undefined,
+      model: String(promptingAI.model || ai.model || process.env.AI_MODEL || '').trim() || undefined,
       apiKey: apiKey || undefined,
-      baseUrl: String(promptingAI.baseUrl || ai.baseUrl || '').trim() || undefined,
+      baseUrl: String(promptingAI.baseUrl || ai.baseUrl || process.env.AI_BASE_URL || '').trim() || undefined,
       timeout: this.parsePositiveInt(promptingAI.timeout || ai.timeout, 60000),
       maxRetries: this.parsePositiveInt(promptingAI.maxRetries || ai.maxRetries, 2),
       temperature: this.parseTemperature(promptingAI.temperature ?? ai.temperature, 0.7),
@@ -3745,14 +3740,14 @@ export class CLIInterface {
           ? pickBool((promptingImage.cover as Record<string, unknown>).insertIntoArticle)
           : pickBool(promptingImage.insertCoverImage)
       ) ?? (
-        (templateImageConfig.cover && typeof templateImageConfig.cover === 'object')
-          ? pickBool((templateImageConfig.cover as Record<string, unknown>).insertIntoArticle)
-          : pickBool(templateImageConfig.insertCoverImage)
-      ) ?? (
-        (globalImage.cover && typeof globalImage.cover === 'object')
-          ? pickBool((globalImage.cover as Record<string, unknown>).insertIntoArticle)
-          : pickBool(globalImage.insertCoverImage)
-      ) ?? true,
+          (templateImageConfig.cover && typeof templateImageConfig.cover === 'object')
+            ? pickBool((templateImageConfig.cover as Record<string, unknown>).insertIntoArticle)
+            : pickBool(templateImageConfig.insertCoverImage)
+        ) ?? (
+          (globalImage.cover && typeof globalImage.cover === 'object')
+            ? pickBool((globalImage.cover as Record<string, unknown>).insertIntoArticle)
+            : pickBool(globalImage.insertCoverImage)
+        ) ?? true,
       promptDir: String(
         promptingImage.promptDir
         || templateImageConfig.promptDir
@@ -3770,17 +3765,17 @@ export class CLIInterface {
         (promptingImage.prompt && typeof promptingImage.prompt === 'object')
           ? (
             (promptingImage.prompt as Record<string, unknown>).usePlatformSystem
-              ?? (promptingImage.prompt as Record<string, unknown>).usePlatformImageSystem
+            ?? (promptingImage.prompt as Record<string, unknown>).usePlatformImageSystem
           ) !== false
           : (templateImageConfig.prompt && typeof templateImageConfig.prompt === 'object')
             ? (
               (templateImageConfig.prompt as Record<string, unknown>).usePlatformSystem
-                ?? (templateImageConfig.prompt as Record<string, unknown>).usePlatformImageSystem
+              ?? (templateImageConfig.prompt as Record<string, unknown>).usePlatformImageSystem
             ) !== false
             : (globalImage.prompt && typeof globalImage.prompt === 'object')
               ? (
                 (globalImage.prompt as Record<string, unknown>).usePlatformSystem
-                  ?? (globalImage.prompt as Record<string, unknown>).usePlatformImageSystem
+                ?? (globalImage.prompt as Record<string, unknown>).usePlatformImageSystem
               ) !== false
               : true,
       baseImage: String(
@@ -3811,10 +3806,10 @@ export class CLIInterface {
         (templateImageConfig.inline && typeof templateImageConfig.inline === 'object')
           ? (templateImageConfig.inline as Record<string, unknown>).promptBase
           : ((templateImageConfig.prompt as Record<string, unknown> | undefined)?.inlineBase)
-        ?? ((globalImage.inline && typeof globalImage.inline === 'object')
-          ? (globalImage.inline as Record<string, unknown>).promptBase
-          : ((globalImage.prompt as Record<string, unknown> | undefined)?.inlineBase))
-        ?? ''
+          ?? ((globalImage.inline && typeof globalImage.inline === 'object')
+            ? (globalImage.inline as Record<string, unknown>).promptBase
+            : ((globalImage.prompt as Record<string, unknown> | undefined)?.inlineBase))
+          ?? ''
       ).trim() || undefined,
       coverRatio: String(
         (templateCover as any).ratio ?? templateImageConfig.coverRatio ?? (globalCover as any).ratio ?? globalImage.coverRatio ?? ''
@@ -3841,15 +3836,6 @@ export class CLIInterface {
         (templateCover as any).unsplashQuery ?? templateImageConfig.unsplashQuery ?? (globalCover as any).unsplashQuery ?? globalImage.unsplashQuery ?? ''
       ).trim() || undefined,
     };
-  }
-
-  private resolveEnvValue(value: string): string {
-    const raw = String(value || '').trim();
-    const exactEnvMatch = raw.match(/^\$\{([A-Z0-9_]+)\}$/i);
-    if (exactEnvMatch?.[1]) {
-      return process.env[exactEnvMatch[1]] || '';
-    }
-    return raw;
   }
 
   private parseTemperature(raw: unknown, fallback: number): number {
@@ -5211,8 +5197,7 @@ export class CLIInterface {
       } catch (error) {
         lastError = error;
         console.warn(
-          `[ai] 请求失败 (${attempt}/${maxRetries}): ${
-            error instanceof Error ? error.message : String(error)
+          `[ai] 请求失败 (${attempt}/${maxRetries}): ${error instanceof Error ? error.message : String(error)
           }`
         );
         if (attempt < maxRetries) {
@@ -5223,8 +5208,7 @@ export class CLIInterface {
     }
 
     throw new Error(
-      `调用 AI 生成失败: ${
-        lastError instanceof Error ? lastError.message : String(lastError)
+      `调用 AI 生成失败: ${lastError instanceof Error ? lastError.message : String(lastError)
       }`
     );
   }
@@ -5257,7 +5241,7 @@ export class CLIInterface {
 
   private async requestOpenAICompletion(prompt: string, ai: ArticleAIConfig): Promise<string> {
     if (!ai.apiKey) {
-      throw new Error('OpenAI provider 缺少 apiKey');
+      throw new Error('OpenAI provider 缺少 apiKey（请使用环境变量或 .env 提供）');
     }
     const baseUrl = ai.baseUrl || 'https://api.openai.com/v1';
     const data = await this.fetchJsonWithTimeout(
@@ -5292,7 +5276,7 @@ export class CLIInterface {
 
   private async requestAnthropicCompletion(prompt: string, ai: ArticleAIConfig): Promise<string> {
     if (!ai.apiKey) {
-      throw new Error('Anthropic provider 缺少 apiKey');
+      throw new Error('Anthropic provider 缺少 apiKey（请使用环境变量或 .env 提供）');
     }
     const baseUrl = ai.baseUrl || 'https://api.anthropic.com/v1';
     const data = await this.fetchJsonWithTimeout(
@@ -5328,7 +5312,7 @@ export class CLIInterface {
 
   private async requestGeminiCompletion(prompt: string, ai: ArticleAIConfig): Promise<string> {
     if (!ai.apiKey) {
-      throw new Error('Gemini provider 缺少 apiKey');
+      throw new Error('Gemini provider 缺少 apiKey（请使用环境变量或 .env 提供）');
     }
     const baseUrl = ai.baseUrl || 'https://generativelanguage.googleapis.com/v1beta';
     const model = ai.model || 'gemini-1.5-flash';
@@ -6054,7 +6038,7 @@ export class CLIInterface {
     );
 
     const moduleLabel = args.moduleConfig?.label || args.moduleName || 'article';
-      const moduleDir = args.moduleConfig?.moduleDir
+    const moduleDir = args.moduleConfig?.moduleDir
       || path.resolve(args.runtimeConfig.outputBaseDir, this.resolveModuleDirectoryName(moduleLabel));
     const coverDir = effectiveImageConfig.outputDir
       ? path.resolve(args.runtimeConfig.configDir || process.cwd(), effectiveImageConfig.outputDir)

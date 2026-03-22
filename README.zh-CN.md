@@ -76,6 +76,7 @@ lyra weekly
 
 - 建议使用独立的 `wechat.publish.json` / `zhihu.publish.json` 配置文件
 - 发布配置仅包含平台发布字段（AI 配置跟随 `.lyrarc.json`）
+- 密钥类配置（如 `WECHAT_ACCESS_TOKEN`、`AI_API_KEY`）请放在 `.env`（会自动加载），需要时可用 `--env` 指定自定义文件，参考 `.env.example`
 
 ```json
 {
@@ -133,10 +134,41 @@ lyra check-metadata --path ../your-notes-repo --fix-tags --ai-tags --provider op
 
 Provider 说明：
 
-- `openai`：需要 `OPENAI_API_KEY`
-- `anthropic`：需要 `ANTHROPIC_API_KEY`
-- `gemini`：需要 `GEMINI_API_KEY`（或 `GOOGLE_API_KEY`）
-- `local`：本地模型服务
+- 统一使用 `.env` 中的 `AI_API_KEY`
+- 用 `AI_BASE_URL` 切换不同提供商（OpenAI 兼容，如 OpenRouter/LiteLLM）
+- `AI_MODEL` 控制模型名
+
+示例 `.env`：
+```text
+AI_API_KEY=your_key
+AI_BASE_URL=https://openrouter.ai/api/v1
+AI_MODEL=openai/gpt-4o-mini
+```
+
+LiteLLM 示例：
+```text
+AI_API_KEY=your_key
+AI_BASE_URL=http://localhost:4000/v1
+AI_MODEL=gpt-4o-mini
+```
+
+Unsplash（封面兜底）：
+```text
+UNSPLASH_ACCESS_KEY=your_unsplash_key
+```
+
+引用链接：
+```json
+{
+  "templates": {
+    "weekly": {
+      "export": {
+        "referenceLinks": { "enabled": true }
+      }
+    }
+  }
+}
+```
 
 ## 配置发现规则
 

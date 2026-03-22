@@ -35,7 +35,11 @@
         "thumb_image_path": { "type": "string", "description": "封面图路径（本地）" },
         "thumb_image_url": { "type": "string", "description": "封面图 URL（远程）" },
         "cover_prompt": { "type": "string", "description": "封面生成提示词（可选）" },
-        "cover_ratio": { "type": "string", "description": "封面比例（如 16:9 / 4:3）" }
+        "cover_ratio": {
+          "type": "string",
+          "enum": ["16:9", "4:3"],
+          "description": "封面比例（16:9 / 4:3）"
+        }
       }
     }
   }

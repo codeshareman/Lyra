@@ -1,6 +1,6 @@
 {
   "name": "@captain_z/lyra",
-  "version": "1.0.2",
+  "version": "1.0.5",
   "description": "Universal content generation framework with plugin-based architecture",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,6 +44,7 @@
     "cosmiconfig": "^9.0.0",
     "cron-parser": "^4.9.0",
     "date-fns": "^3.0.6",
+    "dotenv": "^16.5.1",
     "glob": "^10.3.10",
     "gray-matter": "^4.0.3",
     "handlebars": "^4.7.8",

@@ -390,6 +390,16 @@
                   }
                 }
               }
+            },
+            "referenceLinks": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Whether to render the reference links section at the end"
+                }
+              }
             }
           }
         },
@@ -401,12 +411,10 @@
               "type": "boolean"
             },
             "provider": {
-              "type": "string"
+              "type": "string",
+              "enum": ["local", "openai", "anthropic", "gemini"]
             },
             "model": {
-              "type": "string"
-            },
-            "apiKey": {
               "type": "string"
             },
             "summaries": {

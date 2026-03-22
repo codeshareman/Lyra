@@ -130,7 +130,10 @@ export interface AIConfig {
   enabled: boolean;
   provider: string;
   model: string;
-  apiKey: string;
+  /**
+   * @deprecated 使用环境变量或 .env 文件提供 API Key
+   */
+  apiKey?: string;
   summaries?: {
     enabled: boolean;
     minLength?: number;
@@ -273,6 +276,7 @@ export interface DocumentMetadata {
   tags: string[];
   publishedPlatforms: string[];
   brandTitle?: string; // 可选的品牌标题
+  showReferenceLinks?: boolean; // 是否输出文末引用链接
 }
 
 // ============================================================================

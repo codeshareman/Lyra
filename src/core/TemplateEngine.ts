@@ -128,6 +128,76 @@ export class TemplateEngine implements ITemplateEngine {
       return new this.handlebars.SafeString(imageMarkdown);
     });
 
+    // renderReferenceLinks: 汇总内容区的链接引用（遵循模板的展示顺序）
+    this.registerHelper('renderReferenceLinks', (content: Record<string, any>) => {
+      if (!content || typeof content !== 'object') return '';
+
+      const links: string[] = [];
+      const seen = new Set<string>();
+
+      const pushLinks = (items: any) => {
+        if (!Array.isArray(items)) return;
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const url = String((item as Record<string, any>).url || '').trim();
+          if (!url || seen.has(url)) continue;
+          seen.add(url);
+          links.push(url);
+        }
+      };
+
+      const contentMap = content as Record<string, any>;
+
+      // 本周动态
+      pushLinks(contentMap.weeklyUpdates);
+
+      // 精读文章：readingArticles -> reading -> articles
+      if (Array.isArray(contentMap.readingArticles) && contentMap.readingArticles.length > 0) {
+        pushLinks(contentMap.readingArticles);
+      } else if (Array.isArray(contentMap.reading) && contentMap.reading.length > 0) {
+        pushLinks(contentMap.reading);
+      } else if (Array.isArray(contentMap.articles) && contentMap.articles.length > 0) {
+        pushLinks(contentMap.articles);
+      }
+
+      // 书籍输入
+      pushLinks(contentMap.readingBooks);
+
+      // 技术与生产力：tech -> tools
+      if (Array.isArray(contentMap.tech) && contentMap.tech.length > 0) {
+        pushLinks(contentMap.tech);
+      } else if (Array.isArray(contentMap.tools) && contentMap.tools.length > 0) {
+        pushLinks(contentMap.tools);
+      }
+
+      // 产品与精选
+      pushLinks(contentMap.products);
+
+      // 生活记录
+      pushLinks(contentMap.life);
+
+      // 饮食记录
+      pushLinks(contentMap.food);
+
+      // 运动记录
+      pushLinks(contentMap.exercise);
+
+      // 本周旋律
+      pushLinks(contentMap.music);
+
+      // 随感
+      pushLinks(contentMap.thoughts);
+
+      if (links.length === 0) return '';
+
+      const lines = ['## 引用链接', ''];
+      links.forEach((link, index) => {
+        lines.push(`[${index + 1}] ${link}`);
+      });
+
+      return new this.handlebars.SafeString(lines.join('\n'));
+    });
+
     // renderCode: 渲染代码块
     this.registerHelper('renderCode', (code: string, language?: string | any) => {
       if (!code) return '';
